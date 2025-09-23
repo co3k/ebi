@@ -519,7 +519,7 @@ Provide a risk assessment and explain any suspicious patterns found."#,
                 role: "user".to_string(),
                 content: prompt,
             }],
-            temperature: self.config.temperature.or(Some(CLAUDE_DEFAULT_TEMPERATURE)),
+            temperature: self.config.temperature.unwrap_or(CLAUDE_DEFAULT_TEMPERATURE),
             system: Some("You are a security analysis assistant. Analyze the provided script code for security vulnerabilities and provide a detailed assessment.".to_string()),
         }
     }

@@ -100,7 +100,10 @@ ebi [オプション] <コマンド> [コマンド引数...]
 ### 使用例
 
 ```bash
-# カスタムモデルでPythonスクリプトを分析
+# ClaudeモデルでPythonスクリプトを分析
+cat script.py | ebi --model claude-3.5-sonnet python
+
+# Geminiモデルで分析
 cat script.py | ebi --model gemini-2.5-flash python
 
 # 詳細出力で分析
@@ -111,6 +114,9 @@ cat ambiguous_script | ebi --lang bash sh
 
 # 大きなスクリプト用にタイムアウトを増やす
 cat large_script.py | ebi --timeout 120 python
+
+# 高速分析のためにClaude Haikuを使用
+cat simple_script.sh | ebi --model claude-3.5-haiku bash
 ```
 
 ## リスクレベルの理解

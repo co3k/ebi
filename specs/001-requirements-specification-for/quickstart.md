@@ -36,8 +36,8 @@ export ANTHROPIC_API_KEY="your-anthropic-api-key"
 
 ### Optional: Set defaults
 ```bash
-# Change default model
-export EBI_DEFAULT_MODEL="gemini-2.5-flash"
+# Change default model (supports OpenAI, Claude, and Gemini)
+export EBI_DEFAULT_MODEL="claude-3.5-sonnet"
 
 # Change default timeout
 export EBI_DEFAULT_TIMEOUT=120

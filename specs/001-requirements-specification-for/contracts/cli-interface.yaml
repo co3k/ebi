@@ -1,0 +1,160 @@
+# CLI Interface Contract for EBI
+
+## Command Structure
+```
+[producer] | ebi [OPTIONS] [COMMAND] [COMMAND_ARGS...]
+```
+
+## Options
+
+### --lang, -l <LANGUAGE>
+- Type: String
+- Required: No
+- Values: bash, python, javascript, ruby, perl
+- Description: Override automatic language detection
+- Example: `--lang python`
+
+### --model, -m <MODEL>
+- Type: String
+- Required: No
+- Default: gemini-pro
+- Values: gemini-pro, gpt-4-turbo, claude-3
+- Description: LLM model for analysis
+- Example: `--model gpt-4-turbo`
+
+### --timeout, -t <SECONDS>
+- Type: Integer
+- Required: No
+- Default: 60
+- Range: 10-300
+- Description: Maximum time for LLM analysis
+- Example: `--timeout 120`
+
+### --verbose, -v
+- Type: Flag
+- Required: No
+- Description: Enable detailed output to stderr
+- Example: `--verbose`
+
+### --debug, -d
+- Type: Flag
+- Required: No
+- Description: Enable debug output including LLM communications
+- Example: `--debug`
+
+### --version, -V
+- Type: Flag
+- Required: No
+- Description: Print version and exit
+- Example: `--version`
+
+### --help, -h
+- Type: Flag
+- Required: No
+- Description: Print help and exit
+- Example: `--help`
+
+## Exit Codes
+
+| Code | Meaning |
+|------|---------|
+| 0 | Successful execution (script analyzed and executed) |
+| 1 | User declined execution after analysis |
+| 2 | Parse error (unknown language or invalid script) |
+| 3 | LLM analysis failed (timeout or service error) |
+| 4 | No input provided (empty stdin) |
+| 5 | Invalid command-line arguments |
+| 6 | Target command not found |
+| 7 | Target command execution failed |
+| 127 | Command not found (standard shell convention) |
+
+## Input/Output Specification
+
+### Input (stdin)
+- Format: Raw script text
+- Encoding: UTF-8
+- Max size: 10MB (configurable at compile time)
+
+### Output (stdout)
+- Analysis report (human-readable)
+- Interactive prompt for confirmation
+- Target command stdout (if execution approved)
+
+### Error Output (stderr)
+- Error messages
+- Verbose/debug output (if flags enabled)
+- Target command stderr (if execution approved)
+
+## Interactive Prompts
+
+### Execution Confirmation
+```
+Execute this script? (yes/no):
+```
+- Valid inputs: "yes", "y", "no", "n" (case-insensitive)
+- Invalid input: Re-prompt up to 3 times
+- EOF/Interrupt: Treat as "no"
+
+## Usage Examples
+
+### Basic Usage
+```bash
+# Analyze and potentially execute a bash script
+curl -sL https://example.com/install.sh | ebi bash
+
+# Analyze Python script with arguments
+cat script.py | ebi python - --some-arg
+
+# Force language detection
+cat ambiguous.script | ebi --lang bash sh
+```
+
+### With Options
+```bash
+# Use different model with longer timeout
+curl -sL installer.sh | ebi --model gpt-4-turbo --timeout 120 bash
+
+# Debug mode for troubleshooting
+cat script.sh | ebi --debug bash
+
+# Verbose output for more details
+cat script.py | ebi --verbose python
+```
+
+### Error Cases
+```bash
+# Empty input
+echo "" | ebi bash
+# Exit code: 4
+
+# Unknown language
+echo "unknown syntax" | ebi unknown-command
+# Exit code: 2
+
+# User declines
+echo "rm -rf /" | ebi bash
+# (After analysis, user enters "no")
+# Exit code: 1
+```
+
+## Environment Variables
+
+### EBI_DEFAULT_MODEL
+- Type: String
+- Description: Override default model
+- Example: `export EBI_DEFAULT_MODEL=gpt-4-turbo`
+
+### EBI_DEFAULT_TIMEOUT
+- Type: Integer
+- Description: Override default timeout
+- Example: `export EBI_DEFAULT_TIMEOUT=120`
+
+### EBI_LLM_API_KEY
+- Type: String
+- Description: API key for LLM provider
+- Example: `export EBI_LLM_API_KEY=sk-...`
+
+### NO_COLOR
+- Type: Flag (presence)
+- Description: Disable colored output
+- Example: `export NO_COLOR=1`

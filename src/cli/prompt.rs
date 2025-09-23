@@ -61,7 +61,7 @@ impl UserPrompter {
                  This script accesses system resources.\n\
                  Please review the analysis before proceeding."
             }
-            RiskLevel::Low => {
+            RiskLevel::Low | RiskLevel::None => {
                 "✅ LOW RISK DETECTED\n\
                  This script appears relatively safe."
             }
@@ -79,7 +79,12 @@ impl UserPrompter {
         }
 
         // Show execution recommendation
-        println!("{}", report.execution_recommendation);
+        let recommendation_text = report
+            .execution_advice
+            .as_deref()
+            .unwrap_or_else(|| report.execution_recommendation.description());
+
+        println!("{}", recommendation_text);
         println!();
 
         // Show the actual prompt
@@ -88,13 +93,17 @@ impl UserPrompter {
 
         // Flush to ensure prompt is displayed
         io::stdout().flush()
-            .map_err(|e| EbiError::UserInputTimeout)?;
+            .map_err(|_| EbiError::UserInputTimeout)?;
 
         Ok(())
     }
 
     fn get_prompt_text(&self, risk_level: &RiskLevel) -> String {
         match risk_level {
+            RiskLevel::Critical => {
+                "⚠️  Execution is blocked due to CRITICAL risk.\n\
+                 (This prompt should not be shown under normal operation.)"
+            }
             RiskLevel::High => {
                 "⚠️  Do you want to proceed with execution despite the HIGH RISK? \n\
                  Type 'yes' to execute anyway, 'no' to cancel, or 'review' to see full details: "
@@ -103,11 +112,12 @@ impl UserPrompter {
                 "🔸 Do you want to proceed with execution? \n\
                  Type 'yes' to execute, 'no' to cancel, or 'review' to see full details: "
             }
-            _ => {
+            RiskLevel::Low | RiskLevel::Info | RiskLevel::None => {
                 "Do you want to proceed with script execution? \n\
                  Type 'yes' to execute, 'no' to cancel: "
             }
-        }.to_string()
+        }
+        .to_string()
     }
 
     fn get_user_input(&self) -> Result<String, EbiError> {
@@ -165,8 +175,8 @@ impl UserPrompter {
                 }
                 Err(mpsc::TryRecvError::Empty) => {
                     if start_time.elapsed() >= timeout {
-                        println!("\n⏰ Input timeout reached. Defaulting to 'no' for safety.");
-                        return Ok("no".to_string());
+                        println!("\n⏰ Input timeout reached. Defaulting to decline for safety.");
+                        return Err(EbiError::UserInputTimeout);
                     }
                     thread::sleep(Duration::from_millis(100));
                 }
@@ -250,13 +260,19 @@ impl UserPrompter {
 // Convenience functions for common prompting scenarios
 impl UserPrompter {
     pub fn for_cli(cli: &crate::cli::args::Cli) -> Self {
-        let timeout = if cli.is_debug() {
-            None // No timeout in debug mode for easier testing
-        } else {
-            Some(300) // 5 minute default timeout
-        };
+        if cli.is_debug() {
+            return Self::new(None, cli.should_use_color());
+        }
 
-        Self::new(timeout, cli.should_use_color())
+        let env_timeout = std::env::var("EBI_PROMPT_TIMEOUT")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .map(|value| value.clamp(10, 900));
+
+        let prompt_timeout = env_timeout
+            .unwrap_or_else(|| cli.get_timeout_seconds().min(300));
+
+        Self::new(Some(prompt_timeout), cli.should_use_color())
     }
 
     pub fn for_testing() -> Self {
@@ -272,6 +288,7 @@ impl UserPrompter {
 mod tests {
     use super::*;
     use crate::models::{ScriptInfo, Language};
+    use clap::Parser;
 
     #[test]
     fn test_response_parsing() {

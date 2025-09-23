@@ -29,13 +29,14 @@ pub struct AnalysisResult {
     pub analysis_type: AnalysisType,
     pub risk_level: RiskLevel,
     pub summary: String,
-    pub details: Vec<Finding>,
+    pub details: Option<String>,
+    pub findings: Vec<Finding>,
     pub confidence: f32,
     pub model_used: String,
-    pub response_time_ms: u64,
+    pub analysis_duration_ms: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RiskLevel {
     None,
     Info,
@@ -65,6 +66,7 @@ impl AnalysisRequest {
             content,
             context: AnalysisContext {
                 language,
+                source: crate::models::ScriptSource::Stdin,
                 script_type: None,
                 truncated: false,
             },
@@ -84,6 +86,7 @@ impl AnalysisRequest {
             content,
             context: AnalysisContext {
                 language,
+                source: crate::models::ScriptSource::Stdin,
                 script_type: None,
                 truncated: false,
             },
@@ -115,16 +118,17 @@ impl AnalysisResult {
     pub fn new(
         analysis_type: AnalysisType,
         model_used: String,
-        response_time_ms: u64,
+        analysis_duration_ms: u64,
     ) -> Self {
         Self {
             analysis_type,
             risk_level: RiskLevel::None,
             summary: String::new(),
-            details: Vec::new(),
+            details: None,
+            findings: Vec::new(),
             confidence: 0.0,
             model_used,
-            response_time_ms,
+            analysis_duration_ms,
         }
     }
 
@@ -143,16 +147,21 @@ impl AnalysisResult {
         self
     }
 
+    pub fn with_details<S: Into<String>>(mut self, details: S) -> Self {
+        self.details = Some(details.into());
+        self
+    }
+
     pub fn add_finding(&mut self, finding: Finding) {
         // Update overall risk level if this finding is more severe
         if finding.severity > self.risk_level {
             self.risk_level = finding.severity.clone();
         }
-        self.details.push(finding);
+        self.findings.push(finding);
     }
 
     pub fn has_high_risk_findings(&self) -> bool {
-        self.details.iter().any(|f| matches!(
+        self.findings.iter().any(|f| matches!(
             f.severity,
             RiskLevel::High | RiskLevel::Critical
         ))

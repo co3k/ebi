@@ -24,12 +24,18 @@ async fn main() {
         Err(e) => {
             eprintln!("❌ Execution failed: {}", e);
             match e {
-                EbiError::ExecutionBlocked => 3,        // Security analysis blocked execution
-                EbiError::AnalysisTimeout { .. } => 4,  // Analysis timed out
-                EbiError::LlmClientError(_) => 5,       // LLM service error
-                EbiError::UserInputTimeout => 6,        // User input timeout
-                EbiError::CommandNotFound { .. } => 7,  // Target command not found
-                _ => 1,                                  // General error
+                EbiError::UnknownLanguage | EbiError::ParseError(_) => 2,
+                EbiError::NoInput => 4,
+                EbiError::InvalidArguments(_) => 5,
+                EbiError::CommandNotFound { .. } => 6,
+                EbiError::ExecutionFailed(_) => 7,
+                EbiError::AnalysisTimeout { .. }
+                | EbiError::AnalysisUnavailable(_)
+                | EbiError::LlmClientError(_)
+                | EbiError::ExecutionBlocked
+                | EbiError::TokenLimitExceeded => 3,
+                EbiError::UserInputTimeout => 1,
+                _ => 1,
             }
         }
     };

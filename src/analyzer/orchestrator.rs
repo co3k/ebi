@@ -3,7 +3,6 @@ use crate::models::{
     ScriptComponents, Language, ScriptSource,
 };
 use crate::analyzer::llm_client::{LlmProvider, create_llm_client};
-use crate::analyzer::prompts::PromptTemplate;
 use crate::error::EbiError;
 use std::sync::Arc;
 use tokio::time::{timeout, Duration};
@@ -41,6 +40,8 @@ impl AnalysisOrchestrator {
         let context = AnalysisContext {
             language: language.clone(),
             source: source.clone(),
+            script_type: None,
+            truncated: false,
         };
 
         // Prepare analysis requests
@@ -126,12 +127,13 @@ impl AnalysisOrchestrator {
     ) -> Result<AnalysisResult, EbiError> {
         // Apply timeout to the entire analysis operation
         timeout(
-            self.default_timeout,
+            Duration::from_secs(request.timeout_seconds)
+                .min(self.default_timeout),
             self.llm_client.analyze(request)
         )
         .await
         .map_err(|_| EbiError::AnalysisTimeout {
-            timeout: self.default_timeout.as_secs()
+            timeout: request.timeout_seconds
         })?
     }
 
@@ -160,6 +162,8 @@ impl AnalysisOrchestrator {
         let context = AnalysisContext {
             language: language.clone(),
             source: source.clone(),
+            script_type: None,
+            truncated: false,
         };
 
         let request = AnalysisRequest {
@@ -206,6 +210,8 @@ impl AnalysisOrchestrator {
             context: AnalysisContext {
                 language: Language::Bash,
                 source: ScriptSource::Stdin,
+                script_type: None,
+                truncated: false,
             },
             model: self.llm_client.get_model_name().to_string(),
             timeout_seconds: 30,
@@ -257,59 +263,97 @@ impl AnalysisOrchestrator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::ScriptComponents;
+    use crate::analyzer::llm_client::LlmProvider;
+    use crate::models::{AnalysisContext, AnalysisRequest, AnalysisResult, AnalysisType, ScriptSource, Language};
+    use std::future::Future;
+    use std::pin::Pin;
+    use std::sync::Arc;
 
-    // Note: These tests would require either mocking the LLM client or using a test API
+    struct MockLlmClient;
+
+    impl LlmProvider for MockLlmClient {
+        fn analyze<'a>(
+            &'a self,
+            request: &'a AnalysisRequest,
+        ) -> Pin<Box<dyn Future<Output = Result<AnalysisResult, EbiError>> + Send + 'a>> {
+            let response = AnalysisResult::new(
+                request.analysis_type.clone(),
+                "mock-model".to_string(),
+                5,
+            )
+            .with_summary("Mock analysis".to_string())
+            .with_confidence(0.9);
+
+            Box::pin(async move { Ok(response) })
+        }
+
+        fn get_model_name(&self) -> &str {
+            "mock-model"
+        }
+
+        fn get_timeout(&self) -> Duration {
+            Duration::from_secs(30)
+        }
+    }
+
+    fn mock_orchestrator() -> AnalysisOrchestrator {
+        AnalysisOrchestrator {
+            llm_client: Arc::new(MockLlmClient),
+            max_concurrent_requests: 2,
+            default_timeout: Duration::from_secs(60),
+        }
+    }
+
     #[tokio::test]
     async fn test_orchestrator_creation() {
-        // This test uses a mock configuration
-        let result = AnalysisOrchestrator::for_testing();
-        // Since we don't have actual LLM client implementation, this might fail
-        // In a real implementation, we'd use dependency injection or mocking
+        let orchestrator = mock_orchestrator();
+        assert_eq!(orchestrator.max_concurrent_requests, 2);
+        assert_eq!(orchestrator.llm_client.get_timeout(), Duration::from_secs(30));
     }
 
     #[test]
     fn test_request_validation() {
-        let orchestrator = AnalysisOrchestrator::for_testing();
-        if let Ok(orch) = orchestrator {
-            let valid_request = AnalysisRequest {
-                analysis_type: AnalysisType::CodeVulnerability,
-                content: "echo hello".to_string(),
-                context: AnalysisContext {
-                    language: Language::Bash,
-                    source: ScriptSource::Stdin,
-                },
-                model: "test-model".to_string(),
-                timeout_seconds: 60,
-            };
+        let orchestrator = mock_orchestrator();
 
-            assert!(orch.validate_analysis_request(&valid_request).is_ok());
+        let valid_request = AnalysisRequest {
+            analysis_type: AnalysisType::CodeVulnerability,
+            content: "echo hello".to_string(),
+            context: AnalysisContext {
+                language: Language::Bash,
+                source: ScriptSource::Stdin,
+                script_type: None,
+                truncated: false,
+            },
+            model: "test-model".to_string(),
+            timeout_seconds: 60,
+        };
 
-            let invalid_request = AnalysisRequest {
-                analysis_type: AnalysisType::CodeVulnerability,
-                content: "".to_string(), // Empty content
-                context: AnalysisContext {
-                    language: Language::Bash,
-                    source: ScriptSource::Stdin,
-                },
-                model: "test-model".to_string(),
-                timeout_seconds: 60,
-            };
+        assert!(orchestrator.validate_analysis_request(&valid_request).is_ok());
 
-            assert!(orch.validate_analysis_request(&invalid_request).is_err());
-        }
+        let invalid_request = AnalysisRequest {
+            analysis_type: AnalysisType::CodeVulnerability,
+            content: "".to_string(),
+            context: AnalysisContext {
+                language: Language::Bash,
+                source: ScriptSource::Stdin,
+                script_type: None,
+                truncated: false,
+            },
+            model: "test-model".to_string(),
+            timeout_seconds: 60,
+        };
+
+        assert!(orchestrator.validate_analysis_request(&invalid_request).is_err());
     }
 
     #[test]
     fn test_configuration_updates() {
-        let mut orchestrator = AnalysisOrchestrator::for_testing();
-        if let Ok(ref mut orch) = orchestrator {
-            orch.update_timeout(90);
-            orch.update_concurrency(5);
+        let mut orchestrator = mock_orchestrator();
+        orchestrator.update_timeout(90);
+        orchestrator.update_concurrency(5);
 
-            let info = orch.get_model_info();
-            assert!(info.contains("90s"));
-            assert!(info.contains("Max Concurrent: 5"));
-        }
+        let info = orchestrator.get_model_info();
+        assert!(info.contains("90s"));
+        assert!(info.contains("Max Concurrent: 5"));
     }
 }

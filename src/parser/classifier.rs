@@ -1,5 +1,4 @@
 use crate::models::{SecurityRelevance, NodeInfo, Language};
-use crate::error::EbiError;
 
 pub struct SecurityClassifier;
 
@@ -161,7 +160,7 @@ impl SecurityClassifier {
         false
     }
 
-    fn is_critical_python_pattern(&self, node_type: &str, content: &str) -> bool {
+    fn is_critical_python_pattern(&self, _node_type: &str, content: &str) -> bool {
         // Direct code execution
         if content.contains("exec(") || content.contains("eval(") {
             return true;
@@ -195,7 +194,7 @@ impl SecurityClassifier {
         false
     }
 
-    fn is_high_risk_python_pattern(&self, node_type: &str, content: &str) -> bool {
+    fn is_high_risk_python_pattern(&self, _node_type: &str, content: &str) -> bool {
         // Subprocess operations
         if content.contains("subprocess.") {
             return true;

@@ -1,6 +1,5 @@
 use crate::models::{AnalysisReport, RiskLevel};
 use crate::cli::args::Cli;
-use std::fmt;
 
 pub struct ReportFormatter {
     use_colors: bool,
@@ -124,7 +123,7 @@ impl ReportFormatter {
                 RiskLevel::High => ("\x1b[1m\x1b[33m", "⚠️"),     // Bold yellow
                 RiskLevel::Medium => ("\x1b[1m\x1b[35m", "🔸"),   // Bold magenta
                 RiskLevel::Low => ("\x1b[1m\x1b[32m", "✅"),      // Bold green
-                RiskLevel::Info => ("\x1b[1m\x1b[34m", "ℹ️"),    // Bold blue
+                RiskLevel::Info | RiskLevel::None => ("\x1b[1m\x1b[34m", "ℹ️"), // Bold blue
             }
         } else {
             ("", "")
@@ -166,7 +165,7 @@ impl ReportFormatter {
                 RiskLevel::High => ("\x1b[1m\x1b[33m", "⚠️"),
                 RiskLevel::Medium => ("\x1b[1m\x1b[35m", "🔍"),
                 RiskLevel::Low => ("\x1b[1m\x1b[32m", "✅"),
-                RiskLevel::Info => ("\x1b[1m\x1b[34m", "ℹ️"),
+                RiskLevel::Info | RiskLevel::None => ("\x1b[1m\x1b[34m", "ℹ️"),
             }
         } else {
             ("", "")
@@ -174,12 +173,17 @@ impl ReportFormatter {
 
         let reset = if self.use_colors { "\x1b[0m" } else { "" };
 
+        let recommendation_text = report
+            .execution_advice
+            .as_deref()
+            .unwrap_or_else(|| report.execution_recommendation.description());
+
         format!(
             "{}{} EXECUTION RECOMMENDATION{}\n\n{}",
             color_code,
             emoji,
             reset,
-            report.execution_recommendation
+            recommendation_text
         )
     }
 
@@ -189,7 +193,7 @@ impl ReportFormatter {
             RiskLevel::High => "⚠️",
             RiskLevel::Medium => "🔸",
             RiskLevel::Low => "✅",
-            RiskLevel::Info => "ℹ️",
+            RiskLevel::Info | RiskLevel::None => "ℹ️",
         };
 
         format!(
@@ -231,7 +235,8 @@ impl ReportFormatter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::{ScriptInfo, Language};
+    use crate::models::{ScriptInfo, Language, ExecutionRecommendation};
+    use clap::Parser;
 
     #[test]
     fn test_report_formatting() {
@@ -239,7 +244,8 @@ mod tests {
         let mut report = AnalysisReport::new(script_info);
         report.overall_risk = RiskLevel::High;
         report.analysis_summary = "Test summary".to_string();
-        report.execution_recommendation = "Test recommendation".to_string();
+        report.execution_recommendation = ExecutionRecommendation::Dangerous;
+        report.execution_advice = Some("Test recommendation".to_string());
 
         let cli = crate::cli::args::Cli::try_parse_from(vec!["ebi", "bash"]).unwrap();
         let formatter = ReportFormatter::new(&cli);
@@ -257,6 +263,8 @@ mod tests {
         let script_info = ScriptInfo::new(Language::Python, 200, 10);
         let mut report = AnalysisReport::new(script_info);
         report.overall_risk = RiskLevel::Critical;
+        report.execution_recommendation = ExecutionRecommendation::Blocked;
+        report.execution_advice = Some("BLOCK EXECUTION".to_string());
 
         let cli = crate::cli::args::Cli::try_parse_from(vec!["ebi", "python"]).unwrap();
         let formatter = ReportFormatter::new(&cli);

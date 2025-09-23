@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::fmt;
 use std::path::PathBuf;
 use crate::error::EbiError;
 
@@ -62,6 +63,15 @@ impl Language {
             Language::Bash => "bash",
             Language::Python => "python",
             Language::Unknown => "unknown",
+        }
+    }
+}
+
+impl fmt::Display for ScriptSource {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ScriptSource::Stdin => write!(f, "stdin"),
+            ScriptSource::File(path) => write!(f, "{}", path.display()),
         }
     }
 }

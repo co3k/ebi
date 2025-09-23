@@ -80,7 +80,7 @@ impl Cli {
 
     pub fn get_llm_model(&self) -> &str {
         // Check environment variable override
-        if let Ok(model) = std::env::var("EBI_DEFAULT_MODEL") {
+        if let Ok(_model) = std::env::var("EBI_DEFAULT_MODEL") {
             // We can't return a borrowed string from env var, so for now return the CLI value
             // In a real implementation, we'd want to handle this differently
         }

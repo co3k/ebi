@@ -1,8 +1,9 @@
 use crate::models::{Script, ExecutionDecision};
 use crate::executor::ExecutionConfig;
 use crate::error::EbiError;
-use std::process::{Command, Stdio};
-use std::io::Write;
+use std::process::Stdio;
+use tokio::io::AsyncWriteExt;
+use tokio::process::Command;
 use tokio::time::{timeout, Duration};
 
 pub struct ScriptRunner {
@@ -49,30 +50,38 @@ impl ScriptRunner {
 
         // Write script content to stdin
         if let Some(mut stdin) = child.stdin.take() {
-            stdin.write_all(script.content.as_bytes())
+            stdin
+                .write_all(script.content.as_bytes())
+                .await
                 .map_err(|e| EbiError::ExecutionFailed(format!("Failed to write to stdin: {}", e)))?;
             // Close stdin to signal EOF
-            drop(stdin);
         }
 
         // Wait for completion with optional timeout
         let exit_status = if let Some(timeout_secs) = self.timeout_seconds {
-            match timeout(Duration::from_secs(timeout_secs), async {
-                tokio::task::spawn_blocking(move || child.wait()).await
-            }).await {
-                Ok(Ok(Ok(status))) => status,
-                Ok(Ok(Err(e))) => return Err(EbiError::ExecutionFailed(e.to_string())),
-                Ok(Err(e)) => return Err(EbiError::ExecutionFailed(format!("Task join error: {}", e))),
+            match timeout(Duration::from_secs(timeout_secs), child.wait()).await {
+                Ok(Ok(status)) => status,
+                Ok(Err(e)) => return Err(EbiError::ExecutionFailed(e.to_string())),
                 Err(_) => {
                     // Timeout occurred, try to kill the process
-                    let _ = child.kill();
+                    if let Err(kill_err) = child.start_kill() {
+                        return Err(EbiError::ExecutionFailed(format!(
+                            "Script execution timed out after {} seconds and could not be terminated: {}",
+                            timeout_secs,
+                            kill_err
+                        )));
+                    }
+                    // Await process termination after sending kill signal
+                    let _ = child.wait().await;
                     return Err(EbiError::ExecutionFailed(
                         format!("Script execution timed out after {} seconds", timeout_secs)
                     ));
                 }
             }
         } else {
-            child.wait()
+            child
+                .wait()
+                .await
                 .map_err(|e| EbiError::ExecutionFailed(e.to_string()))?
         };
 
@@ -99,7 +108,6 @@ impl ScriptRunner {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::{ScriptSource, Language};
 
     #[test]
     fn test_runner_creation() {

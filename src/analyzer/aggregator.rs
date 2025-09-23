@@ -1,6 +1,6 @@
 use crate::models::{
     AnalysisResult, AnalysisReport, RiskLevel, AnalysisType,
-    ScriptInfo, Language, ScriptComponents,
+    ScriptInfo, ScriptComponents, ExecutionRecommendation, SecurityRelevance,
 };
 use crate::parser::SecurityClassifier;
 use crate::error::EbiError;
@@ -74,13 +74,13 @@ impl AnalysisAggregator {
             .max()
             .unwrap_or(&RiskLevel::Info);
 
-        let total_duration = results.iter()
+        let total_duration: u64 = results.iter()
             .map(|r| r.analysis_duration_ms)
             .sum();
 
         let average_confidence = results.iter()
             .map(|r| r.confidence)
-            .sum::<f64>() / results.len() as f64;
+            .sum::<f32>() / results.len() as f32;
 
         // Combine summaries
         let combined_summary = results.iter()
@@ -91,7 +91,11 @@ impl AnalysisAggregator {
         // Combine details
         let combined_details = results.iter()
             .enumerate()
-            .map(|(i, r)| format!("Analysis {}: {}", i + 1, r.details.as_deref().unwrap_or("No details")))
+            .map(|(i, r)| format!(
+                "Analysis {}: {}",
+                i + 1,
+                r.details.as_deref().unwrap_or("No details available")
+            ))
             .collect::<Vec<_>>()
             .join("\n\n");
 
@@ -126,13 +130,13 @@ impl AnalysisAggregator {
             .max()
             .unwrap_or(&RiskLevel::Info);
 
-        let total_duration = results.iter()
+        let total_duration: u64 = results.iter()
             .map(|r| r.analysis_duration_ms)
             .sum();
 
         let average_confidence = results.iter()
             .map(|r| r.confidence)
-            .sum::<f64>() / results.len() as f64;
+            .sum::<f32>() / results.len() as f32;
 
         let combined_summary = results.iter()
             .map(|r| r.summary.clone())
@@ -141,7 +145,11 @@ impl AnalysisAggregator {
 
         let combined_details = results.iter()
             .enumerate()
-            .map(|(i, r)| format!("Injection Analysis {}: {}", i + 1, r.details.as_deref().unwrap_or("No details")))
+            .map(|(i, r)| format!(
+                "Injection Analysis {}: {}",
+                i + 1,
+                r.details.as_deref().unwrap_or("No details available")
+            ))
             .collect::<Vec<_>>()
             .join("\n\n");
 
@@ -175,8 +183,8 @@ impl AnalysisAggregator {
         }
 
         // Factor in static analysis from components
-        let static_risk = self.classifier.classify_script_overall_risk(&components.metadata.priority_nodes);
-        risk_factors.push(static_risk);
+        let static_relevance = self.classifier.classify_script_overall_risk(&components.metadata.priority_nodes);
+        risk_factors.push(self.map_security_to_risk(static_relevance));
 
         // Return the highest risk level found
         risk_factors.iter()
@@ -191,10 +199,13 @@ impl AnalysisAggregator {
         components: &ScriptComponents,
     ) -> AnalysisReport {
         // Add execution recommendation
-        report.execution_recommendation = self.generate_execution_recommendation(&report, components);
+        let (recommendation, advice) = self.generate_execution_guidance(&report, components);
+        report.execution_recommendation = recommendation;
+        report.execution_advice = Some(advice);
 
         // Add risk explanation
-        let risk_explanation = self.classifier.get_risk_explanation(&report.overall_risk);
+        let relevance = self.map_risk_to_relevance(&report.overall_risk);
+        let risk_explanation = self.classifier.get_risk_explanation(&relevance);
         report.risk_explanation = Some(risk_explanation.to_string());
 
         // Add mitigation suggestions
@@ -207,33 +218,56 @@ impl AnalysisAggregator {
         report
     }
 
-    fn generate_execution_recommendation(
+    fn map_security_to_risk(&self, relevance: SecurityRelevance) -> RiskLevel {
+        match relevance {
+            SecurityRelevance::Critical => RiskLevel::Critical,
+            SecurityRelevance::High => RiskLevel::High,
+            SecurityRelevance::Medium => RiskLevel::Medium,
+            SecurityRelevance::Low => RiskLevel::Low,
+        }
+    }
+
+    fn map_risk_to_relevance(&self, risk: &RiskLevel) -> SecurityRelevance {
+        match risk {
+            RiskLevel::Critical => SecurityRelevance::Critical,
+            RiskLevel::High => SecurityRelevance::High,
+            RiskLevel::Medium => SecurityRelevance::Medium,
+            RiskLevel::Low | RiskLevel::Info | RiskLevel::None => SecurityRelevance::Low,
+        }
+    }
+
+    fn generate_execution_guidance(
         &self,
         report: &AnalysisReport,
         _components: &ScriptComponents,
-    ) -> String {
+    ) -> (ExecutionRecommendation, String) {
         match report.overall_risk {
-            RiskLevel::Critical => {
+            RiskLevel::Critical => (
+                ExecutionRecommendation::Blocked,
                 "BLOCK EXECUTION: This script contains critical security risks that could \
-                 cause immediate system damage or compromise. Manual review required before execution.".to_string()
-            }
-            RiskLevel::High => {
+                 cause immediate system damage or compromise. Manual review required before execution.".to_string(),
+            ),
+            RiskLevel::High => (
+                ExecutionRecommendation::Dangerous,
                 "CAUTION REQUIRED: This script contains high-risk operations. \
                  Carefully review the identified issues and consider safer alternatives. \
-                 Execute only if you trust the source and understand the implications.".to_string()
-            }
-            RiskLevel::Medium => {
+                 Execute only if you trust the source and understand the implications.".to_string(),
+            ),
+            RiskLevel::Medium => (
+                ExecutionRecommendation::Caution,
                 "REVIEW RECOMMENDED: This script performs operations that access system resources. \
-                 Review the analysis results and ensure you understand what the script will do.".to_string()
-            }
-            RiskLevel::Low => {
+                 Review the analysis results and ensure you understand what the script will do.".to_string(),
+            ),
+            RiskLevel::Low => (
+                ExecutionRecommendation::Safe,
                 "LOW RISK: This script appears to perform standard operations with minimal security impact. \
-                 Standard precautions apply.".to_string()
-            }
-            RiskLevel::Info => {
+                 Standard precautions apply.".to_string(),
+            ),
+            RiskLevel::Info | RiskLevel::None => (
+                ExecutionRecommendation::Safe,
                 "MINIMAL RISK: No significant security concerns identified. \
-                 This script appears safe to execute.".to_string()
-            }
+                 This script appears safe to execute.".to_string(),
+            ),
         }
     }
 
@@ -318,8 +352,10 @@ impl AnalysisAggregator {
 
         report = report.with_code_analysis(fallback_result);
 
-        report.execution_recommendation =
-            "BLOCK EXECUTION: Analysis failed. Cannot assess security risks safely.".to_string();
+        report.execution_recommendation = ExecutionRecommendation::Blocked;
+        report.execution_advice = Some(
+            "BLOCK EXECUTION: Analysis failed. Cannot assess security risks safely.".to_string(),
+        );
 
         report.analysis_summary = format!(
             "Analysis of {} script failed due to: {}. Execution blocked for safety.",
@@ -375,7 +411,7 @@ impl Default for AnalysisAggregator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::{ScriptComponents, ParseMetadata};
+    use crate::models::{ScriptComponents, ExecutionRecommendation, Language};
 
     #[test]
     fn test_risk_calculation() {
@@ -400,8 +436,9 @@ mod tests {
         let mut report = AnalysisReport::new(script_info);
         report.overall_risk = RiskLevel::Critical;
 
-        let recommendation = aggregator.generate_execution_recommendation(&report, &components);
-        assert!(recommendation.contains("BLOCK EXECUTION"));
+        let (recommendation, advice) = aggregator.generate_execution_guidance(&report, &components);
+        assert_eq!(recommendation, ExecutionRecommendation::Blocked);
+        assert!(advice.contains("BLOCK EXECUTION"));
     }
 
     #[test]
@@ -413,7 +450,12 @@ mod tests {
         let report = aggregator.create_fallback_report(script_info, &error);
 
         assert_eq!(report.overall_risk, RiskLevel::Critical);
-        assert!(report.execution_recommendation.contains("BLOCK EXECUTION"));
+        assert_eq!(report.execution_recommendation, ExecutionRecommendation::Blocked);
+        assert!(report
+            .execution_advice
+            .as_ref()
+            .unwrap()
+            .contains("BLOCK EXECUTION"));
         assert!(report.analysis_summary.contains("failed"));
     }
 

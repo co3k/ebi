@@ -1,4 +1,4 @@
-use crate::models::{Language, ScriptComponents, ParseMetadata};
+use crate::models::{Language, ScriptComponents};
 use crate::error::EbiError;
 use std::time::Instant;
 
@@ -83,11 +83,9 @@ impl TreeSitterParser {
 
         // Update metadata
         let parse_time_ms = start_time.elapsed().as_millis() as u64;
-        components.metadata = ParseMetadata {
-            total_nodes: parse_tree.total_nodes,
-            parse_time_ms,
-            language: self.language.clone(),
-        };
+        components.metadata.total_nodes = parse_tree.total_nodes;
+        components.metadata.parse_time_ms = parse_time_ms;
+        components.metadata.language = self.language.clone();
 
         Ok(components)
     }
@@ -159,7 +157,7 @@ impl TreeSitterParser {
             .collect::<Vec<_>>()
             .join("\n");
 
-        components = components.with_code_body(code_body);
+        components.code_body = code_body;
 
         Ok(())
     }
@@ -212,7 +210,7 @@ impl TreeSitterParser {
             .collect::<Vec<_>>()
             .join("\n");
 
-        components = components.with_code_body(code_body);
+        components.code_body = code_body;
 
         Ok(())
     }

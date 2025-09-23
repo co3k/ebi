@@ -8,9 +8,9 @@ pub use prompt::UserPrompter;
 
 use std::io::{self, Read};
 use crate::error::EbiError;
-use crate::models::{Script, ScriptSource, Language, AnalysisReport, ExecutionDecision, ScriptInfo};
+use crate::models::{Script, ScriptSource, AnalysisReport, ExecutionDecision, ScriptInfo};
 use crate::executor::ExecutionConfig;
-use crate::parser::{ComponentExtractor, LanguageDetector};
+use crate::parser::ComponentExtractor;
 use crate::analyzer::{AnalysisOrchestrator, AnalysisAggregator};
 
 pub struct CliHandler {
@@ -73,7 +73,16 @@ impl CliHandler {
 
         // Step 7: Get user decision using integrated prompter
         let prompter = UserPrompter::for_cli(&self.cli);
-        let decision = prompter.prompt_execution_decision(&analysis_report)?;
+        let decision = match prompter.prompt_execution_decision(&analysis_report) {
+            Ok(decision) => decision,
+            Err(EbiError::UserInputTimeout) => {
+                if self.cli.is_verbose() {
+                    eprintln!("⏰ User input timeout reached; defaulting to decline.");
+                }
+                return Ok(1);
+            }
+            Err(e) => return Err(e),
+        };
 
         if !decision.proceed {
             if self.cli.is_verbose() {
@@ -119,7 +128,9 @@ impl CliHandler {
         );
 
         // Create LLM analysis orchestrator
-        let api_key = std::env::var("OPENAI_API_KEY").ok(); // Allow missing key for now
+        let api_key = std::env::var("EBI_LLM_API_KEY")
+            .or_else(|_| std::env::var("OPENAI_API_KEY"))
+            .ok();
         let orchestrator = match AnalysisOrchestrator::new(
             self.cli.get_llm_model(),
             api_key,
@@ -194,7 +205,7 @@ impl CliHandler {
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit())
             .spawn()
-            .map_err(|e| EbiError::CommandNotFound {
+            .map_err(|_| EbiError::CommandNotFound {
                 command: config.target_command.clone(),
             })?;
 

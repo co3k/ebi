@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 fn main() {
     // Build Tree-sitter grammars for bash and python
-    let dir: PathBuf = ["tree-sitter-bash", "src"].iter().collect();
+    let _dir: PathBuf = ["tree-sitter-bash", "src"].iter().collect();
 
     // Note: In a real implementation, you would download or include
     // the actual tree-sitter grammar repositories as git submodules

@@ -52,7 +52,7 @@ RECOMMENDED ACTIONS:
 CONFIDENCE LEVEL: [High/Medium/Low]
 [Brief explanation of analysis confidence]"#,
             language.as_str(),
-            source.as_str(),
+            source,
             content.len(),
             language.as_str().to_lowercase(),
             content,
@@ -106,7 +106,7 @@ RECOMMENDATIONS:
 
 CONFIDENCE LEVEL: [High/Medium/Low]"#,
             language.as_str(),
-            source.as_str(),
+            source,
             content,
             language.as_str(),
             Self::get_injection_patterns_guidance(language)
@@ -242,7 +242,10 @@ IMPORTANT GUIDELINES:
 
         if estimated_tokens > max_tokens {
             // Truncate the content section while preserving instructions
-            let max_content_chars = (max_tokens * 4).saturating_sub(1000); // Reserve 1000 chars for instructions
+            let reserved_instruction_chars = 512; // keep room for analysis checklist
+            let max_content_chars = max_tokens
+                .saturating_mul(4)
+                .saturating_sub(reserved_instruction_chars);
 
             if let Some(content_start) = prompt.find("SCRIPT CONTENT:") {
                 if let Some(content_end) = prompt[content_start..].find("\n\nANALYSIS REQUIREMENTS:") {
@@ -250,11 +253,23 @@ IMPORTANT GUIDELINES:
                     let content_section = &prompt[content_start..full_content_end];
 
                     if content_section.len() > max_content_chars {
+                        const CONTENT_PREFIX: &str = "SCRIPT CONTENT:\n";
+                        let content_body = content_section
+                            .strip_prefix(CONTENT_PREFIX)
+                            .unwrap_or(content_section);
+
+                        let total_chars = content_body.chars().count();
+                        let excerpt_len = max_content_chars.min(total_chars);
+                        let excerpt = content_body
+                            .chars()
+                            .take(excerpt_len)
+                            .collect::<String>();
+
                         let truncated_content = format!(
                             "SCRIPT CONTENT:\n```\n{}\n[... TRUNCATED - showing first {} characters of {} total ...]\n```",
-                            &content_section[14..].chars().take(max_content_chars - 100).collect::<String>(),
-                            max_content_chars - 100,
-                            content_section.len() - 14
+                            excerpt,
+                            excerpt_len,
+                            total_chars
                         );
 
                         let result = format!(

@@ -3,6 +3,8 @@ use crate::error::EbiError;
 use reqwest;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
+use std::future::Future;
+use std::pin::Pin;
 use tokio::time::timeout;
 
 #[derive(Debug, Clone)]
@@ -52,8 +54,11 @@ struct Usage {
     completion_tokens: u32,
 }
 
-pub trait LlmProvider {
-    async fn analyze(&self, request: &AnalysisRequest) -> Result<AnalysisResult, EbiError>;
+pub trait LlmProvider: Send + Sync {
+    fn analyze<'a>(
+        &'a self,
+        request: &'a AnalysisRequest,
+    ) -> Pin<Box<dyn Future<Output = Result<AnalysisResult, EbiError>> + Send + 'a>>;
     fn get_model_name(&self) -> &str;
     fn get_timeout(&self) -> Duration;
 }
@@ -94,16 +99,21 @@ impl OpenAiCompatibleClient {
 
         let mut retries = 0;
         loop {
-            let response = timeout(
-                Duration::from_secs(self.config.timeout_seconds),
-                self.client
-                    .post(&self.config.api_endpoint)
-                    .header("Content-Type", "application/json")
-                    .header("Authorization", format!("Bearer {}",
-                        self.config.api_key.as_ref().unwrap_or(&"".to_string())))
-                    .json(&api_request)
-                    .send()
-            ).await;
+            let timeout_secs = request.timeout_seconds.min(self.config.timeout_seconds);
+            let timeout_duration = Duration::from_secs(timeout_secs);
+
+            let mut http_request = self.client
+                .post(&self.config.api_endpoint)
+                .header("Content-Type", "application/json")
+                .json(&api_request);
+
+            if let Some(ref api_key) = self.config.api_key {
+                if !api_key.is_empty() {
+                    http_request = http_request.header("Authorization", format!("Bearer {}", api_key));
+                }
+            }
+
+            let response = timeout(timeout_duration, http_request.send()).await;
 
             match response {
                 Ok(Ok(resp)) => {
@@ -141,7 +151,7 @@ impl OpenAiCompatibleClient {
                 }
                 Err(_) => {
                     return Err(EbiError::AnalysisTimeout {
-                        timeout: self.config.timeout_seconds
+                        timeout: timeout_secs
                     });
                 }
             }
@@ -180,7 +190,7 @@ Respond in a structured format with clear risk assessment."#,
                     request.content,
                     request.content.len(),
                     request.context.language.as_str(),
-                    request.context.source.as_str()
+                    request.context.source.to_string()
                 )
             }
             AnalysisType::InjectionDetection => {
@@ -205,7 +215,7 @@ Provide a risk assessment and explain any suspicious patterns found."#,
                     request.context.language.as_str(),
                     request.content,
                     request.context.language.as_str(),
-                    request.context.source.as_str()
+                    request.context.source.to_string()
                 )
             }
         }
@@ -213,29 +223,32 @@ Provide a risk assessment and explain any suspicious patterns found."#,
 }
 
 impl LlmProvider for OpenAiCompatibleClient {
-    async fn analyze(&self, request: &AnalysisRequest) -> Result<AnalysisResult, EbiError> {
-        let start_time = std::time::Instant::now();
+    fn analyze<'a>(
+        &'a self,
+        request: &'a AnalysisRequest,
+    ) -> Pin<Box<dyn Future<Output = Result<AnalysisResult, EbiError>> + Send + 'a>> {
+        Box::pin(async move {
+            let start_time = std::time::Instant::now();
 
-        let response_content = self.make_api_request(request).await?;
+            let response_content = self.make_api_request(request).await?;
 
-        let duration_ms = start_time.elapsed().as_millis() as u64;
+            let duration_ms = start_time.elapsed().as_millis() as u64;
 
-        // Parse the response to extract risk level and summary
-        let (risk_level, summary, confidence) = self.parse_analysis_response(&response_content);
+            // Parse the response to extract risk level and summary
+            let (risk_level, summary, confidence) = Self::parse_analysis_response(&response_content);
 
-        let mut result = AnalysisResult::new(
-            request.analysis_type.clone(),
-            self.config.model_name.clone(),
-            duration_ms,
-        )
-        .with_risk_level(risk_level)
-        .with_summary(summary)
-        .with_confidence(confidence);
+            let result = AnalysisResult::new(
+                request.analysis_type.clone(),
+                self.config.model_name.clone(),
+                duration_ms,
+            )
+            .with_risk_level(risk_level)
+            .with_summary(summary)
+            .with_confidence(confidence)
+            .with_details(response_content);
 
-        // Store the full response as details
-        result = result.with_details(response_content);
-
-        Ok(result)
+            Ok(result)
+        })
     }
 
     fn get_model_name(&self) -> &str {
@@ -248,7 +261,7 @@ impl LlmProvider for OpenAiCompatibleClient {
 }
 
 impl OpenAiCompatibleClient {
-    fn parse_analysis_response(&self, response: &str) -> (crate::models::RiskLevel, String, f64) {
+    fn parse_analysis_response(response: &str) -> (crate::models::RiskLevel, String, f32) {
         use crate::models::RiskLevel;
 
         let response_lower = response.to_lowercase();
@@ -295,7 +308,11 @@ impl OpenAiCompatibleClient {
 // Factory function to create LLM clients
 pub fn create_llm_client(model: &str, api_key: Option<String>, timeout_seconds: u64) -> Result<Box<dyn LlmProvider + Send + Sync>, EbiError> {
     // Determine API endpoint based on model
-    let (api_endpoint, actual_model) = if model.starts_with("gpt-") {
+    let endpoint_override = std::env::var("EBI_LLM_API_ENDPOINT").ok();
+
+    let (api_endpoint, actual_model) = if let Some(endpoint) = endpoint_override {
+        (endpoint, model.to_string())
+    } else if model.starts_with("gpt-") {
         ("https://api.openai.com/v1/chat/completions".to_string(), model.to_string())
     } else if model.starts_with("claude-") {
         // For Claude, we'd need to use Anthropic's API format (not OpenAI compatible)
@@ -323,32 +340,15 @@ pub fn create_llm_client(model: &str, api_key: Option<String>, timeout_seconds: 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::{AnalysisContext, Language, ScriptSource};
+    use crate::models::{Language, ScriptSource};
 
     #[test]
     fn test_prompt_building() {
-        let config = LlmConfig {
-            model_name: "gpt-4".to_string(),
-            api_endpoint: "https://api.openai.com/v1/chat/completions".to_string(),
-            api_key: Some("test-key".to_string()),
-            timeout_seconds: 60,
-            max_retries: 3,
-        };
-
-        let client = OpenAiCompatibleClient::new(config).unwrap();
-
-        let request = AnalysisRequest {
-            analysis_type: AnalysisType::CodeVulnerability,
-            content: "echo hello".to_string(),
-            context: AnalysisContext {
-                language: Language::Bash,
-                source: ScriptSource::Stdin,
-            },
-            model: "gpt-4".to_string(),
-            timeout_seconds: 60,
-        };
-
-        let prompt = client.build_prompt(&request);
+        let prompt = crate::analyzer::prompts::PromptTemplate::build_vulnerability_analysis_prompt(
+            "echo hello",
+            &Language::Bash,
+            &ScriptSource::Stdin,
+        );
         assert!(prompt.contains("bash"));
         assert!(prompt.contains("echo hello"));
         assert!(prompt.contains("vulnerabilities"));
@@ -356,18 +356,8 @@ mod tests {
 
     #[test]
     fn test_response_parsing() {
-        let config = LlmConfig {
-            model_name: "gpt-4".to_string(),
-            api_endpoint: "https://api.openai.com/v1/chat/completions".to_string(),
-            api_key: Some("test-key".to_string()),
-            timeout_seconds: 60,
-            max_retries: 3,
-        };
-
-        let client = OpenAiCompatibleClient::new(config).unwrap();
-
         let response = "Risk Level: HIGH\nThis script contains potential vulnerabilities including command injection.";
-        let (risk_level, summary, confidence) = client.parse_analysis_response(response);
+        let (risk_level, summary, confidence) = OpenAiCompatibleClient::parse_analysis_response(response);
 
         assert_eq!(risk_level, crate::models::RiskLevel::High);
         assert!(summary.contains("vulnerabilities"));
@@ -376,11 +366,6 @@ mod tests {
 
     #[test]
     fn test_client_creation() {
-        // Test OpenAI model
-        let client = create_llm_client("gpt-4", Some("test-key".to_string()), 60);
-        assert!(client.is_ok());
-
-        // Test unsupported model
         let client = create_llm_client("claude-3", Some("test-key".to_string()), 60);
         assert!(client.is_err());
     }

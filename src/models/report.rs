@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use std::time::SystemTime;
-use std::collections::HashMap;
+use std::fmt;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use crate::models::analysis::{AnalysisResult, RiskLevel};
 use crate::models::script::Language;
 
@@ -11,7 +13,11 @@ pub struct AnalysisReport {
     pub injection_analysis: Option<AnalysisResult>,
     pub code_analysis: Option<AnalysisResult>,
     pub execution_recommendation: ExecutionRecommendation,
+    pub execution_advice: Option<String>,
     pub warnings: Vec<String>,
+    pub risk_explanation: Option<String>,
+    pub mitigation_suggestions: Vec<String>,
+    pub analysis_summary: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -46,7 +52,11 @@ impl AnalysisReport {
             injection_analysis: None,
             code_analysis: None,
             execution_recommendation: ExecutionRecommendation::Safe,
+            execution_advice: None,
             warnings: Vec::new(),
+            risk_explanation: None,
+            mitigation_suggestions: Vec::new(),
+            analysis_summary: String::new(),
         }
     }
 
@@ -106,11 +116,11 @@ impl AnalysisReport {
         let mut findings = Vec::new();
 
         if let Some(ref injection) = self.injection_analysis {
-            findings.extend(&injection.details);
+            findings.extend(&injection.findings);
         }
 
         if let Some(ref code) = self.code_analysis {
-            findings.extend(&code.details);
+            findings.extend(&code.findings);
         }
 
         findings
@@ -210,13 +220,25 @@ impl ExecutionRecommendation {
     }
 }
 
+impl fmt::Display for ExecutionRecommendation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.description())
+    }
+}
+
 impl ExecutionDecision {
     pub fn new(proceed: bool, analysis_report: &AnalysisReport) -> Self {
         // Create a simple hash of the report for audit trail
-        let report_hash = format!(
-            "{:x}",
-            std::collections::hash_map::DefaultHasher::new()
-        );
+        let mut hasher = DefaultHasher::new();
+        analysis_report.overall_risk.as_str().hash(&mut hasher);
+        analysis_report.script_info.language.as_str().hash(&mut hasher);
+        analysis_report.script_info.size_bytes.hash(&mut hasher);
+        analysis_report.script_info.line_count.hash(&mut hasher);
+        if !analysis_report.analysis_summary.is_empty() {
+            analysis_report.analysis_summary.hash(&mut hasher);
+        }
+
+        let report_hash = format!("{:016x}", hasher.finish());
 
         Self {
             proceed,
@@ -229,7 +251,7 @@ impl ExecutionDecision {
         Self {
             proceed: true,
             timestamp: SystemTime::now(),
-            analysis_report_hash: "quick-decision".to_string(),
+            analysis_report_hash: "manual-proceed".to_string(),
         }
     }
 
@@ -237,7 +259,7 @@ impl ExecutionDecision {
         Self {
             proceed: false,
             timestamp: SystemTime::now(),
-            analysis_report_hash: "quick-decision".to_string(),
+            analysis_report_hash: "manual-decline".to_string(),
         }
     }
 }
@@ -267,6 +289,7 @@ impl std::fmt::Display for AnalysisReport {
 mod tests {
     use super::*;
     use crate::models::analysis::{AnalysisResult, AnalysisType};
+    use crate::ExecutionConfig;
 
     #[test]
     fn test_analysis_report_creation() {
@@ -327,7 +350,7 @@ mod tests {
         );
 
         let command = config.get_full_command();
-        assert_eq!(command, vec!["python", "-c"]);
+        assert_eq!(command, "python -c");
     }
 
     #[test]

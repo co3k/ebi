@@ -349,7 +349,7 @@ mod tests {
         assert!(content.contains("echo hello"));
 
         let injection_content = components.get_injection_content();
-        assert!(content.contains("Comments"));
+        assert!(injection_content.contains("Comments"));
         assert!(injection_content.contains("This is a test"));
     }
 }

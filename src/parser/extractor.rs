@@ -1,4 +1,4 @@
-use crate::models::{Language, ScriptComponents, ParseMetadata};
+use crate::models::{Language, ScriptComponents};
 use crate::parser::tree_sitter::{TreeSitterParser, ParseTree, ParsedNode};
 use crate::parser::language::LanguageDetector;
 use crate::parser::shebang::ShebangParser;

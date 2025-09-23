@@ -584,14 +584,24 @@ impl ClaudeClient {
         };
 
         // Extract summary (first few sentences)
-        let summary = response
+        let summary_raw = response
             .lines()
             .take(3)
             .collect::<Vec<_>>()
-            .join(" ")
-            .chars()
-            .take(200)
-            .collect::<String>();
+            .join(" ");
+        let summary = if summary_raw.len() <= 200 {
+            summary_raw
+        } else {
+            // Find the last whitespace before the 200th character
+            let mut end = 200;
+            for (i, c) in summary_raw.char_indices().take(200).rev() {
+                if c.is_whitespace() {
+                    end = i;
+                    break;
+                }
+            }
+            summary_raw[..end].trim_end().to_string()
+        };
 
         // Calculate confidence based on response quality
         let confidence = if response.len() > 100

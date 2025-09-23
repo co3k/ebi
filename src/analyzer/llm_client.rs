@@ -168,7 +168,7 @@ impl OpenAiCompatibleClient {
 
     fn build_prompt(&self, request: &AnalysisRequest) -> String {
         use crate::analyzer::prompts::PromptTemplate;
-        
+
         match request.analysis_type {
             AnalysisType::CodeVulnerability => {
                 PromptTemplate::build_vulnerability_analysis_prompt(
@@ -184,6 +184,26 @@ impl OpenAiCompatibleClient {
                     &request.context.language,
                     &request.context.source,
                     &request.output_language,
+                )
+            }
+            AnalysisType::DetailedRiskAnalysis => {
+                // For now, pass empty initial findings - this could be enhanced later
+                PromptTemplate::build_detailed_risk_analysis_prompt(
+                    &request.content,
+                    &request.context.language,
+                    &request.context.source,
+                    &request.output_language,
+                    &[], // initial_findings - could be enhanced to pass actual findings
+                )
+            }
+            AnalysisType::SpecificThreatAnalysis => {
+                // For now, pass empty focus lines - this could be enhanced later
+                PromptTemplate::build_specific_threat_analysis_prompt(
+                    &request.content,
+                    &request.context.language,
+                    &request.context.source,
+                    &request.output_language,
+                    &[], // focus_lines - could be enhanced to pass specific line numbers
                 )
             }
         }
@@ -409,63 +429,41 @@ impl ClaudeClient {
     }
 
     fn build_prompt(&self, request: &AnalysisRequest) -> String {
+        use crate::analyzer::prompts::PromptTemplate;
+
         match request.analysis_type {
             AnalysisType::CodeVulnerability => {
-                format!(
-                    r#"Please analyze the following {} script for security vulnerabilities:
-
-SCRIPT CONTENT:
-{}
-
-CONTEXT:
-- Script length: {} characters
-- Language: {}
-- Source: {}
-
-Please provide:
-1. Overall risk level (Critical/High/Medium/Low)
-2. Specific vulnerabilities found
-3. Potential impact of each vulnerability
-4. Recommended mitigations
-
-Focus on:
-- Command injection vulnerabilities
-- Privilege escalation risks
-- Network security issues
-- File system access patterns
-- Code execution risks
-
-Respond in a structured format with clear risk assessment."#,
-                    request.context.language.as_str(),
-                    request.content,
-                    request.content.len(),
-                    request.context.language.as_str(),
-                    request.context.source.to_string()
+                PromptTemplate::build_vulnerability_analysis_prompt(
+                    &request.content,
+                    &request.context.language,
+                    &request.context.source,
+                    &request.output_language,
                 )
             }
             AnalysisType::InjectionDetection => {
-                format!(
-                    r#"Please analyze the following content extracted from a {} script for potential injection attacks:
-
-CONTENT TO ANALYZE:
-{}
-
-This content includes comments and string literals from the script. Please check for:
-1. Suspicious patterns that might indicate injection attacks
-2. Obfuscated or encoded content
-3. Unusual character sequences
-4. Potential social engineering attempts
-5. Hidden or misleading information
-
-CONTEXT:
-- Script language: {}
-- Content source: {}
-
-Provide a risk assessment and explain any suspicious patterns found."#,
-                    request.context.language.as_str(),
-                    request.content,
-                    request.context.language.as_str(),
-                    request.context.source.to_string()
+                PromptTemplate::build_injection_analysis_prompt(
+                    &request.content,
+                    &request.context.language,
+                    &request.context.source,
+                    &request.output_language,
+                )
+            }
+            AnalysisType::DetailedRiskAnalysis => {
+                PromptTemplate::build_detailed_risk_analysis_prompt(
+                    &request.content,
+                    &request.context.language,
+                    &request.context.source,
+                    &request.output_language,
+                    &[], // No initial findings in base LLM call
+                )
+            }
+            AnalysisType::SpecificThreatAnalysis => {
+                PromptTemplate::build_specific_threat_analysis_prompt(
+                    &request.content,
+                    &request.context.language,
+                    &request.context.source,
+                    &request.output_language,
+                    &[], // No focus lines in base LLM call
                 )
             }
         }
@@ -711,63 +709,41 @@ impl GeminiClient {
     }
 
     fn build_prompt(&self, request: &AnalysisRequest) -> String {
+        use crate::analyzer::prompts::PromptTemplate;
+
         match request.analysis_type {
             AnalysisType::CodeVulnerability => {
-                format!(
-                    r#"Please analyze the following {} script for security vulnerabilities:
-
-SCRIPT CONTENT:
-{}
-
-CONTEXT:
-- Script length: {} characters
-- Language: {}
-- Source: {}
-
-Please provide:
-1. Overall risk level (Critical/High/Medium/Low)
-2. Specific vulnerabilities found
-3. Potential impact of each vulnerability
-4. Recommended mitigations
-
-Focus on:
-- Command injection vulnerabilities
-- Privilege escalation risks
-- Network security issues
-- File system access patterns
-- Code execution risks
-
-Respond in a structured format with clear risk assessment."#,
-                    request.context.language.as_str(),
-                    request.content,
-                    request.content.len(),
-                    request.context.language.as_str(),
-                    request.context.source.to_string()
+                PromptTemplate::build_vulnerability_analysis_prompt(
+                    &request.content,
+                    &request.context.language,
+                    &request.context.source,
+                    &request.output_language,
                 )
             }
             AnalysisType::InjectionDetection => {
-                format!(
-                    r#"Please analyze the following content extracted from a {} script for potential injection attacks:
-
-CONTENT TO ANALYZE:
-{}
-
-This content includes comments and string literals from the script. Please check for:
-1. Suspicious patterns that might indicate injection attacks
-2. Obfuscated or encoded content
-3. Unusual character sequences
-4. Potential social engineering attempts
-5. Hidden or misleading information
-
-CONTEXT:
-- Script language: {}
-- Content source: {}
-
-Provide a risk assessment and explain any suspicious patterns found."#,
-                    request.context.language.as_str(),
-                    request.content,
-                    request.context.language.as_str(),
-                    request.context.source.to_string()
+                PromptTemplate::build_injection_analysis_prompt(
+                    &request.content,
+                    &request.context.language,
+                    &request.context.source,
+                    &request.output_language,
+                )
+            }
+            AnalysisType::DetailedRiskAnalysis => {
+                PromptTemplate::build_detailed_risk_analysis_prompt(
+                    &request.content,
+                    &request.context.language,
+                    &request.context.source,
+                    &request.output_language,
+                    &[], // No initial findings in base LLM call
+                )
+            }
+            AnalysisType::SpecificThreatAnalysis => {
+                PromptTemplate::build_specific_threat_analysis_prompt(
+                    &request.content,
+                    &request.context.language,
+                    &request.context.source,
+                    &request.output_language,
+                    &[], // No focus lines in base LLM call
                 )
             }
         }

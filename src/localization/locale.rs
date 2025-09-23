@@ -208,11 +208,30 @@ impl LocalizedMessages {
         }
     }
 
+    pub fn get_critical_warning(language: &OutputLanguage) -> &'static str {
+        match language {
+            OutputLanguage::Japanese => {
+                "🚨 重要な警告: このスクリプトは極めて危険と判定されました！\n\
+                 実行により深刻なセキュリティ被害を受ける可能性があります。\n\
+                 本当に実行する必要があるか慎重に検討してください。"
+            }
+            OutputLanguage::English => {
+                "🚨 CRITICAL WARNING: This script has been identified as extremely dangerous!\n\
+                 Execution may result in severe security compromise.\n\
+                 Please carefully consider if execution is truly necessary."
+            }
+        }
+    }
+
     pub fn get_prompt_text(risk_level: &RiskLevel, language: &OutputLanguage) -> &'static str {
         match (risk_level, language) {
-            (RiskLevel::Critical, _) => {
-                // This should not be shown under normal operation
-                "⚠️  Execution is blocked due to CRITICAL risk."
+            (RiskLevel::Critical, OutputLanguage::Japanese) => {
+                "🚨 極めて危険と判定されましたが、実行を強行しますか？ \n\
+                 本当に実行するには 'yes'、キャンセルするには 'no'、詳細を確認するには 'review' を入力してください: "
+            }
+            (RiskLevel::Critical, OutputLanguage::English) => {
+                "🚨 This script is CRITICALLY dangerous. Do you want to force execution? \n\
+                 Type 'yes' to execute anyway, 'no' to cancel, or 'review' to see full details: "
             }
             (RiskLevel::High, OutputLanguage::Japanese) => {
                 "⚠️  高リスクにも関わらず実行を続行しますか？ \n\

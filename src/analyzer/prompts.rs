@@ -141,6 +141,191 @@ IMPORTANT: Please provide all output in {} language."#,
         )
     }
 
+    pub fn build_detailed_risk_analysis_prompt(
+        content: &str,
+        language: &Language,
+        source: &ScriptSource,
+        output_language: &OutputLanguage,
+        initial_findings: &[String],
+    ) -> String {
+        let findings_context = if initial_findings.is_empty() {
+            "No specific preliminary findings provided.".to_string()
+        } else {
+            format!("Preliminary findings:\n{}", initial_findings.join("\n"))
+        };
+
+        format!(
+            r#"DETAILED SECURITY RISK ANALYSIS
+
+SCRIPT LANGUAGE: {}
+SCRIPT SOURCE: {}
+CONTENT LENGTH: {} characters
+OUTPUT LANGUAGE: {}
+
+PRELIMINARY ANALYSIS CONTEXT:
+{}
+
+SCRIPT CONTENT:
+```{}
+{}
+```
+
+DETAILED ANALYSIS INSTRUCTIONS:
+Perform an exhaustive, line-by-line security analysis. Be EXTREMELY DETAILED and SPECIFIC. Even if it seems verbose, provide comprehensive findings.
+
+REQUIRED ANALYSIS DEPTH:
+1. **Every Risky Operation**: Analyze EVERY potentially dangerous command, function call, or pattern
+2. **Line-by-Line Breakdown**: For scripts with high-risk patterns, analyze significant lines individually
+3. **Attack Vector Analysis**: Detail HOW each vulnerability could be exploited
+4. **Impact Assessment**: Explain the SPECIFIC damage each vulnerability could cause
+5. **Exploitation Scenarios**: Provide realistic step-by-step attack scenarios
+6. **Mitigation Details**: Give detailed, actionable remediation steps
+
+ANALYSIS PRIORITIES (BE VERBOSE):
+- Network operations (downloads, uploads, connections)
+- File system operations (read, write, delete, permission changes)
+- Process execution (system calls, subprocess creation, command injection)
+- Privilege operations (sudo, su, setuid, file permissions)
+- Environment manipulation (PATH, variables, exports)
+- User input handling (arguments, environment variables, stdin)
+- Cryptographic operations (keys, certificates, signatures)
+- Configuration changes (system files, startup scripts)
+
+OUTPUT FORMAT (EXTREMELY DETAILED):
+
+RISK LEVEL: [Critical/High/Medium/Low/Info]
+
+COMPREHENSIVE VULNERABILITY BREAKDOWN:
+[For EVERY significant line, provide:]
+Line XX: [Exact code snippet]
+  - Pattern: [Type of operation/vulnerability]
+  - Risk Level: [Critical/High/Medium/Low]
+  - Attack Vector: [How this could be exploited]
+  - Potential Impact: [Specific damage that could occur]
+  - Exploitation Steps: [Step-by-step attack scenario]
+  - Likelihood: [High/Medium/Low and why]
+  - Mitigation: [Specific steps to reduce risk]
+
+CUMULATIVE RISK ASSESSMENT:
+[Overall evaluation considering all findings together]
+
+DETAILED ATTACK SCENARIOS:
+[Multiple realistic attack scenarios combining various vulnerabilities]
+
+COMPREHENSIVE MITIGATION STRATEGY:
+[Detailed plan for addressing all identified risks]
+
+EXECUTION SAFETY ANALYSIS:
+[Detailed assessment of whether execution is advisable and under what conditions]
+
+IMPORTANT: Be exhaustively detailed. Provide all output in {} language."#,
+            language.as_str(),
+            source,
+            content.len(),
+            output_language.as_llm_language(),
+            findings_context,
+            language.as_str().to_lowercase(),
+            content,
+            output_language.as_llm_language()
+        )
+    }
+
+    pub fn build_specific_threat_analysis_prompt(
+        content: &str,
+        language: &Language,
+        source: &ScriptSource,
+        output_language: &OutputLanguage,
+        focus_lines: &[usize],
+    ) -> String {
+        let lines: Vec<&str> = content.lines().collect();
+        let focus_context = if focus_lines.is_empty() {
+            "Analyze all high-risk patterns found in the script.".to_string()
+        } else {
+            let mut context = String::from("Focus on these specific lines:\n");
+            for &line_num in focus_lines {
+                if let Some(line) = lines.get(line_num.saturating_sub(1)) {
+                    context.push_str(&format!("Line {}: {}\n", line_num, line));
+                }
+            }
+            context
+        };
+
+        format!(
+            r#"SPECIFIC THREAT ANALYSIS
+
+SCRIPT LANGUAGE: {}
+SCRIPT SOURCE: {}
+OUTPUT LANGUAGE: {}
+
+FOCUS AREAS:
+{}
+
+FULL SCRIPT CONTENT:
+```{}
+{}
+```
+
+THREAT-SPECIFIC ANALYSIS INSTRUCTIONS:
+Provide ULTRA-DETAILED analysis of specific security threats. Be comprehensive and verbose.
+
+ANALYSIS REQUIREMENTS:
+1. **Threat Identification**: Identify every potential security threat
+2. **Technical Details**: Explain the technical mechanisms of each threat
+3. **Exploitation Methods**: Detail multiple ways each threat could be exploited
+4. **Real-World Examples**: Provide examples of how similar vulnerabilities have been exploited
+5. **Detection Methods**: Explain how to detect if exploitation has occurred
+6. **Forensic Indicators**: What signs would indicate this script was malicious
+
+DETAILED OUTPUT FORMAT:
+
+IDENTIFIED THREATS:
+
+THREAT 1: [Threat Name]
+  Location: Line XX: [code snippet]
+  Classification: [Type of threat - RCE, Privilege Escalation, Data Exfiltration, etc.]
+  Severity: [Critical/High/Medium/Low]
+
+  Technical Analysis:
+  - Mechanism: [How the threat works technically]
+  - Prerequisites: [What conditions enable this threat]
+  - Scope: [What systems/data could be affected]
+
+  Exploitation Analysis:
+  - Attack Vectors: [Multiple ways to exploit this]
+  - Skill Level Required: [Script kiddie/Intermediate/Advanced]
+  - Tools Needed: [What tools an attacker would use]
+  - Time to Exploit: [How quickly this could be exploited]
+
+  Impact Analysis:
+  - Immediate Effects: [What happens immediately upon exploitation]
+  - Secondary Effects: [Follow-on impacts and lateral movement possibilities]
+  - Data at Risk: [Specific data types that could be compromised]
+  - System Integrity: [How system integrity could be affected]
+
+  Real-World Context:
+  - Similar Attacks: [Examples of similar real-world attacks]
+  - Common Targets: [Who typically gets targeted by this type of attack]
+  - Industry Impact: [How this type of attack affects different industries]
+
+[Repeat for each threat...]
+
+THREAT INTERACTION ANALYSIS:
+[How multiple threats could be chained together for more complex attacks]
+
+DEFENSIVE ANALYSIS:
+[Detailed breakdown of detection and prevention methods]
+
+IMPORTANT: Be extremely thorough and detailed. Provide all output in {} language."#,
+            language.as_str(),
+            source,
+            output_language.as_llm_language(),
+            focus_context,
+            language.as_str().to_lowercase(),
+            content,
+            output_language.as_llm_language()
+        )
+    }
+
     fn get_bash_security_guidance() -> &'static str {
         r#"BASH SECURITY ANALYSIS PRIORITIES:
 
@@ -274,6 +459,48 @@ CONTEXT AWARENESS:
 - Focus on genuinely suspicious content, not normal script complexity
 - Consider the overall script purpose when evaluating findings
 - Distinguish between technical complexity and actual malicious intent"#.to_string()
+            }
+            AnalysisType::DetailedRiskAnalysis => {
+                r#"DETAILED RISK ANALYSIS FOCUS:
+Perform comprehensive, exhaustive analysis of all security risks. Be verbose and thorough.
+
+ANALYSIS REQUIREMENTS:
+1. Analyze EVERY potentially risky operation in extreme detail
+2. Provide line-by-line breakdown of significant security patterns
+3. Detail multiple attack vectors for each vulnerability
+4. Explain technical mechanisms and exploitation methods
+5. Assess realistic impact and likelihood of exploitation
+6. Provide comprehensive mitigation strategies
+
+VERBOSITY EXPECTATION:
+- Be extremely detailed even if it seems excessive
+- Provide multiple examples and scenarios
+- Include technical explanations and context
+- Detail both immediate and secondary impacts
+- Cover multiple exploitation methods per vulnerability
+
+Remember: The goal is comprehensive understanding, not brevity."#.to_string()
+            }
+            AnalysisType::SpecificThreatAnalysis => {
+                r#"SPECIFIC THREAT ANALYSIS FOCUS:
+Provide ultra-detailed analysis of specific security threats and attack patterns.
+
+ANALYSIS DEPTH:
+1. Technical mechanism analysis for each threat
+2. Multiple exploitation methods and attack vectors
+3. Real-world attack examples and case studies
+4. Forensic indicators and detection methods
+5. Threat actor profiling and motivation analysis
+6. Industry-specific impact assessment
+
+COMPREHENSIVE COVERAGE:
+- Include threat classification and severity assessment
+- Detail prerequisite conditions and attack requirements
+- Analyze threat interactions and chaining possibilities
+- Provide extensive mitigation and detection guidance
+- Consider various threat actor skill levels and motivations
+
+Focus on actionable intelligence and comprehensive threat understanding."#.to_string()
             }
         }
     }

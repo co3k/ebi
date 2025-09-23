@@ -15,6 +15,8 @@ pub struct AnalysisRequest {
 pub enum AnalysisType {
     InjectionDetection,  // For comments/strings
     CodeVulnerability,   // For code body
+    DetailedRiskAnalysis, // Comprehensive risk breakdown for high-risk scripts
+    SpecificThreatAnalysis, // Line-by-line threat analysis
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -239,6 +241,8 @@ impl AnalysisType {
         match self {
             AnalysisType::InjectionDetection => "injection_detection",
             AnalysisType::CodeVulnerability => "code_vulnerability",
+            AnalysisType::DetailedRiskAnalysis => "detailed_risk_analysis",
+            AnalysisType::SpecificThreatAnalysis => "specific_threat_analysis",
         }
     }
 
@@ -246,6 +250,8 @@ impl AnalysisType {
         match self {
             AnalysisType::InjectionDetection => "Prompt injection and hidden instruction analysis",
             AnalysisType::CodeVulnerability => "Code vulnerability and security analysis",
+            AnalysisType::DetailedRiskAnalysis => "Comprehensive risk breakdown for high-risk scripts",
+            AnalysisType::SpecificThreatAnalysis => "Line-by-line threat analysis",
         }
     }
 }

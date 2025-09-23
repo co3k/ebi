@@ -1,6 +1,6 @@
 use crate::models::{
     AnalysisResult, AnalysisReport, RiskLevel, AnalysisType,
-    ScriptInfo, ScriptComponents, ExecutionRecommendation, SecurityRelevance, OutputLanguage,
+    ScriptInfo, ScriptComponents, SecurityRelevance, OutputLanguage,
 };
 use crate::parser::SecurityClassifier;
 use crate::localization::locale::LocalizedMessages;

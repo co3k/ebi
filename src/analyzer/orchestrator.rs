@@ -74,8 +74,123 @@ impl AnalysisOrchestrator {
             requests.push(injection_request);
         }
 
-        // Execute requests in parallel with concurrency limit
-        self.execute_parallel_analysis(requests).await
+        // Execute initial requests in parallel with concurrency limit
+        let initial_results = self.execute_parallel_analysis(requests).await?;
+
+        // Check if we need detailed analysis for high-risk findings
+        let needs_detailed_analysis = self.should_perform_detailed_analysis(&initial_results, components);
+
+        if needs_detailed_analysis {
+            let detailed_results = self.perform_detailed_analysis(
+                &initial_results,
+                components,
+                language,
+                source,
+                model,
+                output_language
+            ).await?;
+
+            // Combine initial and detailed results
+            let mut combined_results = initial_results;
+            combined_results.extend(detailed_results);
+            Ok(combined_results)
+        } else {
+            Ok(initial_results)
+        }
+    }
+
+    fn should_perform_detailed_analysis(
+        &self,
+        results: &[AnalysisResult],
+        components: &ScriptComponents,
+    ) -> bool {
+        // Perform detailed analysis if:
+        // 1. Any result shows HIGH or CRITICAL risk
+        // 2. There are multiple medium-risk findings
+        // 3. There are many critical or high-risk nodes in static analysis
+
+        let has_high_risk = results.iter().any(|r|
+            matches!(r.risk_level, crate::models::RiskLevel::High | crate::models::RiskLevel::Critical)
+        );
+
+        let medium_risk_count = results.iter()
+            .filter(|r| matches!(r.risk_level, crate::models::RiskLevel::Medium))
+            .count();
+
+        let critical_nodes = components.get_critical_nodes().len();
+        let high_risk_nodes = components.get_high_risk_nodes().len();
+
+        has_high_risk ||
+        medium_risk_count >= 2 ||
+        critical_nodes >= 3 ||
+        high_risk_nodes >= 5
+    }
+
+    async fn perform_detailed_analysis(
+        &self,
+        initial_results: &[AnalysisResult],
+        components: &ScriptComponents,
+        language: &Language,
+        source: &ScriptSource,
+        model: &str,
+        output_language: &OutputLanguage,
+    ) -> Result<Vec<AnalysisResult>, EbiError> {
+        let context = AnalysisContext {
+            language: language.clone(),
+            source: source.clone(),
+            script_type: None,
+            truncated: false,
+        };
+
+        let mut detailed_requests = Vec::new();
+
+        // Extract initial findings for context
+        let _initial_findings: Vec<String> = initial_results.iter()
+            .map(|r| format!("{:?}: {}", r.analysis_type, r.summary))
+            .collect();
+
+        // Detailed risk analysis
+        let detailed_risk_request = AnalysisRequest {
+            analysis_type: AnalysisType::DetailedRiskAnalysis,
+            content: components.get_analysis_content(language, true),
+            context: context.clone(),
+            model: model.to_string(),
+            timeout_seconds: self.default_timeout.as_secs(),
+            output_language: output_language.clone(),
+        };
+        detailed_requests.push(detailed_risk_request);
+
+        // Specific threat analysis focusing on high-risk lines
+        let high_risk_lines = self.extract_high_risk_lines(components);
+        if !high_risk_lines.is_empty() {
+            let threat_analysis_request = AnalysisRequest {
+                analysis_type: AnalysisType::SpecificThreatAnalysis,
+                content: components.get_analysis_content(language, true),
+                context: context.clone(),
+                model: model.to_string(),
+                timeout_seconds: self.default_timeout.as_secs(),
+                output_language: output_language.clone(),
+            };
+            detailed_requests.push(threat_analysis_request);
+        }
+
+        self.execute_parallel_analysis(detailed_requests).await
+    }
+
+    fn extract_high_risk_lines(&self, components: &ScriptComponents) -> Vec<usize> {
+        let mut high_risk_lines = Vec::new();
+
+        // Extract line numbers from critical and high-risk nodes
+        for node in &components.metadata.priority_nodes {
+            if matches!(node.security_relevance, crate::models::SecurityRelevance::Critical | crate::models::SecurityRelevance::High) {
+                high_risk_lines.push(node.line_start);
+            }
+        }
+
+        // Sort and deduplicate
+        high_risk_lines.sort_unstable();
+        high_risk_lines.dedup();
+        high_risk_lines
     }
 
     async fn execute_parallel_analysis(

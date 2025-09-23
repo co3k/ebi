@@ -54,11 +54,6 @@ impl UserPrompter {
 
         print!("\n{}{}{}\n\n", color_start, prompt_message, color_end);
 
-        // For critical risk, don't show the prompt since execution is blocked
-        if matches!(report.overall_risk, RiskLevel::Critical) {
-            return Err(EbiError::ExecutionBlocked);
-        }
-
         // Show execution recommendation
         let recommendation_text = report
             .execution_advice
@@ -67,6 +62,13 @@ impl UserPrompter {
 
         println!("{}", recommendation_text);
         println!();
+
+        // For critical risk, show strong warning but still allow user choice
+        if matches!(report.overall_risk, RiskLevel::Critical) {
+            let critical_warning = LocalizedMessages::get_critical_warning(&self.output_language);
+            println!("{}", critical_warning);
+            println!();
+        }
 
         // Show the actual prompt
         let prompt_text = LocalizedMessages::get_prompt_text(&report.overall_risk, &self.output_language);
@@ -355,9 +357,9 @@ mod tests {
         let mut report = AnalysisReport::new(script_info);
         report.overall_risk = RiskLevel::Critical;
 
-        // Critical risk should result in execution blocked error
+        // Critical risk should now prompt the user (but will timeout in test with 'no' default)
         let result = prompter.prompt_execution_decision(&report);
-        assert!(matches!(result, Err(EbiError::ExecutionBlocked)));
+        assert!(matches!(result, Err(EbiError::UserInputTimeout)));
     }
 
     #[test]

@@ -39,24 +39,6 @@ ebi --version
 - Internet connection (for LLM API calls)
 - API key for OpenAI or compatible LLM service
 
-## Supported Models
-
-EBI supports multiple LLM providers:
-
-### OpenAI Models
-- `gpt-4o`, `gpt-4o-mini`
-- `gpt-4-turbo`, `gpt-4`
-- `gpt-3.5-turbo`
-- `o1-mini`, `o1-preview` (reasoning models)
-
-### Google Gemini Models
-- `gemini-1.5-pro`, `gemini-1.5-flash`
-- `gemini-2.0-flash-exp`
-- `gemini-pro`, `gemini-pro-vision`
-
-### Custom Endpoints
-You can use any OpenAI-compatible API endpoint by setting the `EBI_LLM_API_ENDPOINT` environment variable.
-
 ## Configuration
 
 Set your LLM API key:
@@ -65,14 +47,14 @@ Set your LLM API key:
 # For OpenAI
 export OPENAI_API_KEY="sk-your-api-key"
 
-# For Google Gemini (use GEMINI_API_KEY environment variable)
+# For Google Gemini
 export GEMINI_API_KEY="your-gemini-api-key"
 
 # For Anthropic Claude
 export ANTHROPIC_API_KEY="your-anthropic-api-key"
 
 # Optional: Set default model
-export EBI_DEFAULT_MODEL="gemini-1.5-flash"
+export EBI_DEFAULT_MODEL="gemini-2.5-flash"
 
 # Optional: Set default timeout (seconds)
 export EBI_DEFAULT_TIMEOUT=120
@@ -118,11 +100,8 @@ Options:
 ### Examples
 
 ```bash
-# Analyze Python script with Gemini model
-cat script.py | ebi --model gemini-1.5-flash python
-
-# Analyze with OpenAI model
-cat script.py | ebi --model gpt-4o python
+# Analyze Python script with custom model
+cat script.py | ebi --model gemini-2.5-flash python
 
 # Analyze with verbose output
 cat installer.sh | ebi --verbose bash

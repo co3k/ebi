@@ -146,7 +146,7 @@ mod tests {
         let args = vec![
             "ebi",
             "--lang", "python",
-            "--model", "gemini-1.5-flash",
+            "--model", "gemini-2.5-flash",
             "--timeout", "120",
             "--verbose",
             "python",
@@ -157,7 +157,7 @@ mod tests {
         let cli = Cli::try_parse_from(args).unwrap();
 
         assert_eq!(cli.lang, Some("python".to_string()));
-        assert_eq!(cli.model, "gemini-1.5-flash");
+        assert_eq!(cli.model, "gemini-2.5-flash");
         assert_eq!(cli.timeout, 120);
         assert!(cli.verbose);
         assert!(!cli.debug);

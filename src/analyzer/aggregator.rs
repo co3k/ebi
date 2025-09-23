@@ -329,42 +329,6 @@ impl AnalysisAggregator {
         summary_parts.join(". ")
     }
 
-    pub fn create_fallback_report(
-        &self,
-        script_info: ScriptInfo,
-        error: &EbiError,
-    ) -> AnalysisReport {
-        let mut report = AnalysisReport::new(script_info);
-
-        // Set critical risk for any analysis failure (fail-safe approach)
-        report.overall_risk = RiskLevel::Critical;
-
-        // Create a fallback analysis result
-        let fallback_result = AnalysisResult::new(
-            AnalysisType::CodeVulnerability,
-            "failed".to_string(),
-            0,
-        )
-        .with_risk_level(RiskLevel::Critical)
-        .with_summary(format!("Analysis failed: {}", error))
-        .with_confidence(0.0)
-        .with_details("LLM analysis could not be completed. For security, execution is blocked.".to_string());
-
-        report = report.with_code_analysis(fallback_result);
-
-        report.execution_recommendation = ExecutionRecommendation::Blocked;
-        report.execution_advice = Some(
-            "BLOCK EXECUTION: Analysis failed. Cannot assess security risks safely.".to_string(),
-        );
-
-        report.analysis_summary = format!(
-            "Analysis of {} script failed due to: {}. Execution blocked for safety.",
-            report.script_info.language.as_str(),
-            error
-        );
-
-        report
-    }
 
     pub fn validate_analysis_quality(&self, results: &[AnalysisResult]) -> Vec<String> {
         let mut warnings = Vec::new();
@@ -441,23 +405,6 @@ mod tests {
         assert!(advice.contains("BLOCK EXECUTION"));
     }
 
-    #[test]
-    fn test_fallback_report_creation() {
-        let aggregator = AnalysisAggregator::new();
-        let script_info = ScriptInfo::new(Language::Python, 200, 10);
-        let error = EbiError::AnalysisTimeout { timeout: 60 };
-
-        let report = aggregator.create_fallback_report(script_info, &error);
-
-        assert_eq!(report.overall_risk, RiskLevel::Critical);
-        assert_eq!(report.execution_recommendation, ExecutionRecommendation::Blocked);
-        assert!(report
-            .execution_advice
-            .as_ref()
-            .unwrap()
-            .contains("BLOCK EXECUTION"));
-        assert!(report.analysis_summary.contains("failed"));
-    }
 
     #[test]
     fn test_analysis_quality_validation() {

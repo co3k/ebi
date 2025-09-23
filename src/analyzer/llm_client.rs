@@ -7,6 +7,10 @@ use std::pin::Pin;
 use std::time::Duration;
 use tokio::time::timeout;
 
+// Constants for Claude API configuration
+const CLAUDE_DEFAULT_MAX_TOKENS: u32 = 1000;
+const CLAUDE_DEFAULT_TEMPERATURE: f32 = 0.3;
+
 #[derive(Debug, Clone)]
 pub struct LlmConfig {
     pub model_name: String,
@@ -14,6 +18,8 @@ pub struct LlmConfig {
     pub api_key: Option<String>,
     pub timeout_seconds: u64,
     pub max_retries: u32,
+    pub max_tokens: Option<u32>,
+    pub temperature: Option<f32>,
 }
 
 #[derive(Debug, Serialize)]
@@ -313,12 +319,302 @@ impl OpenAiCompatibleClient {
     }
 }
 
+// Anthropic Claude API structures
+#[derive(Debug, Serialize)]
+struct ClaudeApiRequest {
+    model: String,
+    max_tokens: u32,
+    messages: Vec<ClaudeMessage>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    temperature: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    system: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct ClaudeMessage {
+    role: String,
+    content: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ClaudeApiResponse {
+    content: Vec<ClaudeContent>,
+    usage: Option<ClaudeUsage>,
+    #[serde(rename = "stop_reason")]
+    stop_reason: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ClaudeContent {
+    text: String,
+    #[serde(rename = "type")]
+    content_type: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ClaudeUsage {
+    #[serde(rename = "input_tokens")]
+    input_tokens: u32,
+    #[serde(rename = "output_tokens")]
+    output_tokens: u32,
+}
+
+pub struct ClaudeClient {
+    config: LlmConfig,
+    client: reqwest::Client,
+}
+
+impl ClaudeClient {
+    pub fn new(config: LlmConfig) -> Result<Self, EbiError> {
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(config.timeout_seconds))
+            .build()
+            .map_err(|e| {
+                EbiError::LlmClientError(format!("Failed to create HTTP client: {}", e))
+            })?;
+
+        Ok(Self { config, client })
+    }
+
+    async fn make_api_request(&self, request: &AnalysisRequest) -> Result<String, EbiError> {
+        let prompt = self.build_prompt(request);
+        let api_request = self.build_api_request(prompt);
+
+        let mut retries = 0;
+        loop {
+            let timeout_secs = request.timeout_seconds.min(self.config.timeout_seconds);
+            let timeout_duration = Duration::from_secs(timeout_secs);
+
+            let http_request = self
+                .client
+                .post(&self.config.api_endpoint)
+                .header("Content-Type", "application/json")
+                .header("x-api-key", self.config.api_key.as_ref().unwrap_or(&"".to_string()))
+                .header("anthropic-version", "2023-06-01")
+                .json(&api_request);
+
+            let response = timeout(timeout_duration, http_request.send()).await;
+
+            match response {
+                Ok(Ok(resp)) => {
+                    if resp.status().is_success() {
+                        let api_response: ClaudeApiResponse = resp.json().await.map_err(|e| {
+                            EbiError::LlmClientError(format!("Failed to parse response: {}", e))
+                        })?;
+
+                        if let Some(content) = api_response.content.first() {
+                            return Ok(content.text.clone());
+                        } else {
+                            return Err(EbiError::LlmClientError(
+                                "No response content received".to_string(),
+                            ));
+                        }
+                    } else {
+                        let status = resp.status();
+                        let error_text = resp
+                            .text()
+                            .await
+                            .unwrap_or_else(|_| "Unknown error".to_string());
+
+                        if retries < self.config.max_retries
+                            && (status.is_server_error() || status == 429)
+                        {
+                            retries += 1;
+                            tokio::time::sleep(Duration::from_millis(1000 * retries as u64)).await;
+                            continue;
+                        }
+
+                        return Err(EbiError::LlmClientError(format!(
+                            "API request failed with status {}: {}",
+                            status, error_text
+                        )));
+                    }
+                }
+                Ok(Err(e)) => {
+                    if retries < self.config.max_retries {
+                        retries += 1;
+                        tokio::time::sleep(Duration::from_millis(1000 * retries as u64)).await;
+                        continue;
+                    }
+                    return Err(EbiError::LlmClientError(format!("Network error: {}", e)));
+                }
+                Err(_) => {
+                    return Err(EbiError::AnalysisTimeout {
+                        timeout: timeout_secs,
+                    });
+                }
+            }
+        }
+    }
+
+    fn build_prompt(&self, request: &AnalysisRequest) -> String {
+        match request.analysis_type {
+            AnalysisType::CodeVulnerability => {
+                format!(
+                    r#"Please analyze the following {} script for security vulnerabilities:
+
+SCRIPT CONTENT:
+{}
+
+CONTEXT:
+- Script length: {} characters
+- Language: {}
+- Source: {}
+
+Please provide:
+1. Overall risk level (Critical/High/Medium/Low)
+2. Specific vulnerabilities found
+3. Potential impact of each vulnerability
+4. Recommended mitigations
+
+Focus on:
+- Command injection vulnerabilities
+- Privilege escalation risks
+- Network security issues
+- File system access patterns
+- Code execution risks
+
+Respond in a structured format with clear risk assessment."#,
+                    request.context.language.as_str(),
+                    request.content,
+                    request.content.len(),
+                    request.context.language.as_str(),
+                    request.context.source.to_string()
+                )
+            }
+            AnalysisType::InjectionDetection => {
+                format!(
+                    r#"Please analyze the following content extracted from a {} script for potential injection attacks:
+
+CONTENT TO ANALYZE:
+{}
+
+This content includes comments and string literals from the script. Please check for:
+1. Suspicious patterns that might indicate injection attacks
+2. Obfuscated or encoded content
+3. Unusual character sequences
+4. Potential social engineering attempts
+5. Hidden or misleading information
+
+CONTEXT:
+- Script language: {}
+- Content source: {}
+
+Provide a risk assessment and explain any suspicious patterns found."#,
+                    request.context.language.as_str(),
+                    request.content,
+                    request.context.language.as_str(),
+                    request.context.source.to_string()
+                )
+            }
+        }
+    }
+
+    fn build_api_request(&self, prompt: String) -> ClaudeApiRequest {
+        ClaudeApiRequest {
+            model: self.config.model_name.clone(),
+            max_tokens: self.config.max_tokens.unwrap_or(CLAUDE_DEFAULT_MAX_TOKENS),
+            messages: vec![ClaudeMessage {
+                role: "user".to_string(),
+                content: prompt,
+            }],
+            temperature: self.config.temperature.or(Some(CLAUDE_DEFAULT_TEMPERATURE)),
+            system: Some("You are a security analysis assistant. Analyze the provided script code for security vulnerabilities and provide a detailed assessment.".to_string()),
+        }
+    }
+}
+
+impl LlmProvider for ClaudeClient {
+    fn analyze<'a>(
+        &'a self,
+        request: &'a AnalysisRequest,
+    ) -> Pin<Box<dyn Future<Output = Result<AnalysisResult, EbiError>> + Send + 'a>> {
+        Box::pin(async move {
+            let start_time = std::time::Instant::now();
+
+            let response_content = self.make_api_request(request).await?;
+
+            let duration_ms = start_time.elapsed().as_millis() as u64;
+
+            // Parse the response to extract risk level and summary
+            let (risk_level, summary, confidence) =
+                Self::parse_analysis_response(&response_content);
+
+            let result = AnalysisResult::new(
+                request.analysis_type.clone(),
+                self.config.model_name.clone(),
+                duration_ms,
+            )
+            .with_risk_level(risk_level)
+            .with_summary(summary)
+            .with_confidence(confidence)
+            .with_details(response_content);
+
+            Ok(result)
+        })
+    }
+
+    fn get_model_name(&self) -> &str {
+        &self.config.model_name
+    }
+
+    fn get_timeout(&self) -> Duration {
+        Duration::from_secs(self.config.timeout_seconds)
+    }
+}
+
+impl ClaudeClient {
+    fn parse_analysis_response(response: &str) -> (crate::models::RiskLevel, String, f32) {
+        use crate::models::RiskLevel;
+
+        let response_lower = response.to_lowercase();
+
+        // Extract risk level
+        let risk_level = if response_lower.contains("critical") {
+            RiskLevel::Critical
+        } else if response_lower.contains("high") {
+            RiskLevel::High
+        } else if response_lower.contains("medium") {
+            RiskLevel::Medium
+        } else if response_lower.contains("low") {
+            RiskLevel::Low
+        } else {
+            RiskLevel::Info // Default if unclear
+        };
+
+        // Extract summary (first few sentences)
+        let summary = response
+            .lines()
+            .take(3)
+            .collect::<Vec<_>>()
+            .join(" ")
+            .chars()
+            .take(200)
+            .collect::<String>();
+
+        // Calculate confidence based on response quality
+        let confidence = if response.len() > 100
+            && (response_lower.contains("vulnerability")
+                || response_lower.contains("risk")
+                || response_lower.contains("security"))
+        {
+            0.85
+        } else if response.len() > 50 {
+            0.70
+        } else {
+            0.50
+        };
+
+        (risk_level, summary, confidence)
+    }
+}
+
 // Gemini API structures
 #[derive(Debug, Serialize)]
 struct GeminiApiRequest {
     contents: Vec<GeminiContent>,
     generation_config: Option<GeminiGenerationConfig>,
-    safety_settings: Option<Vec<GeminiSafetySetting>>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -339,12 +635,6 @@ struct GeminiGenerationConfig {
     temperature: Option<f32>,
 }
 
-#[derive(Debug, Serialize)]
-struct GeminiSafetySetting {
-    category: String,
-    threshold: String,
-}
-
 #[derive(Debug, Deserialize)]
 struct GeminiApiResponse {
     candidates: Vec<GeminiCandidate>,
@@ -355,13 +645,6 @@ struct GeminiApiResponse {
 struct GeminiCandidate {
     content: GeminiContent,
     finish_reason: Option<String>,
-    safety_ratings: Option<Vec<GeminiSafetyRating>>,
-}
-
-#[derive(Debug, Deserialize)]
-struct GeminiSafetyRating {
-    category: String,
-    probability: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -533,30 +816,53 @@ Provide a risk assessment and explain any suspicious patterns found."#,
                 parts: vec![GeminiPart { text: prompt }],
             }],
             generation_config: Some(GeminiGenerationConfig {
-                max_output_tokens: Some(1000),
-                temperature: Some(0.3),
+                max_output_tokens: self.config.max_tokens,
+                temperature: self.config.temperature,
             }),
-            safety_settings: Some(vec![
-                GeminiSafetySetting {
-                    category: "HARM_CATEGORY_HARASSMENT".to_string(),
-                    threshold: "BLOCK_MEDIUM_AND_ABOVE".to_string(),
-                },
-                GeminiSafetySetting {
-                    category: "HARM_CATEGORY_HATE_SPEECH".to_string(),
-                    threshold: "BLOCK_MEDIUM_AND_ABOVE".to_string(),
-                },
-                GeminiSafetySetting {
-                    category: "HARM_CATEGORY_SEXUALLY_EXPLICIT".to_string(),
-                    threshold: "BLOCK_MEDIUM_AND_ABOVE".to_string(),
-                },
-                GeminiSafetySetting {
-                    category: "HARM_CATEGORY_DANGEROUS_CONTENT".to_string(),
-                    threshold: "BLOCK_MEDIUM_AND_ABOVE".to_string(),
-                },
-            ]),
         }
     }
+}
 
+impl LlmProvider for GeminiClient {
+    fn analyze<'a>(
+        &'a self,
+        request: &'a AnalysisRequest,
+    ) -> Pin<Box<dyn Future<Output = Result<AnalysisResult, EbiError>> + Send + 'a>> {
+        Box::pin(async move {
+            let start_time = std::time::Instant::now();
+
+            let response_content = self.make_api_request(request).await?;
+
+            let duration_ms = start_time.elapsed().as_millis() as u64;
+
+            // Parse the response to extract risk level and summary
+            let (risk_level, summary, confidence) =
+                Self::parse_analysis_response(&response_content);
+
+            let result = AnalysisResult::new(
+                request.analysis_type.clone(),
+                self.config.model_name.clone(),
+                duration_ms,
+            )
+            .with_risk_level(risk_level)
+            .with_summary(summary)
+            .with_confidence(confidence)
+            .with_details(response_content);
+
+            Ok(result)
+        })
+    }
+
+    fn get_model_name(&self) -> &str {
+        &self.config.model_name
+    }
+
+    fn get_timeout(&self) -> Duration {
+        Duration::from_secs(self.config.timeout_seconds)
+    }
+}
+
+impl GeminiClient {
     fn parse_analysis_response(response: &str) -> (crate::models::RiskLevel, String, f32) {
         use crate::models::RiskLevel;
 
@@ -602,45 +908,6 @@ Provide a risk assessment and explain any suspicious patterns found."#,
     }
 }
 
-impl LlmProvider for GeminiClient {
-    fn analyze<'a>(
-        &'a self,
-        request: &'a AnalysisRequest,
-    ) -> Pin<Box<dyn Future<Output = Result<AnalysisResult, EbiError>> + Send + 'a>> {
-        Box::pin(async move {
-            let start_time = std::time::Instant::now();
-
-            let response_content = self.make_api_request(request).await?;
-
-            let duration_ms = start_time.elapsed().as_millis() as u64;
-
-            // Parse the response to extract risk level and summary
-            let (risk_level, summary, confidence) =
-                Self::parse_analysis_response(&response_content);
-
-            let result = AnalysisResult::new(
-                request.analysis_type.clone(),
-                self.config.model_name.clone(),
-                duration_ms,
-            )
-            .with_risk_level(risk_level)
-            .with_summary(summary)
-            .with_confidence(confidence)
-            .with_details(response_content);
-
-            Ok(result)
-        })
-    }
-
-    fn get_model_name(&self) -> &str {
-        &self.config.model_name
-    }
-
-    fn get_timeout(&self) -> Duration {
-        Duration::from_secs(self.config.timeout_seconds)
-    }
-}
-
 // Factory function to create LLM clients
 pub fn create_llm_client(
     model: &str,
@@ -658,28 +925,16 @@ pub fn create_llm_client(
             "https://api.openai.com/v1/chat/completions".to_string(),
             trimmed_model.to_string(),
         )
-    } else if trimmed_model.starts_with("claude-") {
-        // For Claude, we'd need to use Anthropic's API format (not OpenAI compatible)
-        return Err(EbiError::LlmClientError(
-            "Claude models not yet supported - use OpenAI-compatible models".to_string(),
-        ));
+    } else if is_claude_model(trimmed_model) {
+        (
+            "https://api.anthropic.com/v1/messages".to_string(),
+            trimmed_model.to_string(),
+        )
     } else if is_gemini_model(trimmed_model) {
-        let model_name = trimmed_model.strip_prefix("gemini/").unwrap_or(trimmed_model);
-        let api_endpoint = format!(
-            "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent",
-            model_name
-        );
-        
-        let config = LlmConfig {
-            model_name: trimmed_model.to_string(),
-            api_endpoint,
-            api_key,
-            timeout_seconds,
-            max_retries: 3,
-        };
-
-        let client = GeminiClient::new(config)?;
-        return Ok(Box::new(client));
+        (
+            format!("https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent", trimmed_model),
+            trimmed_model.to_string(),
+        )
     } else {
         return Err(EbiError::LlmClientError(format!(
             "Unsupported model '{trimmed_model}'. Specify a supported model or set EBI_LLM_API_ENDPOINT for custom integrations",
@@ -692,10 +947,18 @@ pub fn create_llm_client(
         api_key,
         timeout_seconds,
         max_retries: 3,
+        max_tokens: None,
+        temperature: None,
     };
 
-    let client = OpenAiCompatibleClient::new(config)?;
-    Ok(Box::new(client))
+    let client: Box<dyn LlmProvider + Send + Sync> = if is_claude_model(&config.model_name) {
+        Box::new(ClaudeClient::new(config)?)
+    } else if is_gemini_model(&config.model_name) {
+        Box::new(GeminiClient::new(config)?)
+    } else {
+        Box::new(OpenAiCompatibleClient::new(config)?)
+    };
+    Ok(client)
 }
 
 fn build_llm_api_request(model_name: &str, prompt: String) -> LlmApiRequest {
@@ -736,6 +999,11 @@ fn is_openai_model(model: &str) -> bool {
         || candidate.starts_with("o1")
         || candidate.starts_with("o3")
         || candidate.starts_with("o4")
+}
+
+fn is_claude_model(model: &str) -> bool {
+    let candidate = model.strip_prefix("anthropic/").unwrap_or(model);
+    candidate.starts_with("claude-")
 }
 
 fn is_gemini_model(model: &str) -> bool {
@@ -830,26 +1098,62 @@ mod tests {
     }
 
     #[test]
+    fn test_claude_model_detection() {
+        assert!(super::is_claude_model("claude-3.5-sonnet"));
+        assert!(super::is_claude_model("claude-3.5-haiku"));
+        assert!(super::is_claude_model("claude-3-opus"));
+        assert!(super::is_claude_model("claude-3-sonnet"));
+        assert!(super::is_claude_model("claude-3-haiku"));
+        assert!(super::is_claude_model("claude-2"));
+        assert!(super::is_claude_model("claude-instant"));
+        assert!(super::is_claude_model("anthropic/claude-3.5-sonnet"));
+        
+        assert!(!super::is_claude_model("gpt-4"));
+        assert!(!super::is_claude_model("gemini-pro"));
+        assert!(!super::is_claude_model("unknown-model"));
+    }
+
+    #[test]
+    fn test_claude_client_creation() {
+        let client = super::create_llm_client("claude-3.5-sonnet", Some("test-key".to_string()), 60);
+        assert!(client.is_ok());
+        
+        let client = client.unwrap();
+        assert_eq!(client.get_model_name(), "claude-3.5-sonnet");
+    }
+
+    #[test]
+    fn test_claude_response_parsing() {
+        let response = "Risk Level: HIGH\nThis script contains potential vulnerabilities including command injection.";
+        let (risk_level, summary, confidence) =
+            super::ClaudeClient::parse_analysis_response(response);
+
+        assert_eq!(risk_level, crate::models::RiskLevel::High);
+        assert!(summary.contains("vulnerabilities"));
+        assert!(confidence > 0.5);
+    }
+
+    #[test]
     fn test_gemini_model_detection() {
         assert!(super::is_gemini_model("gemini-pro"));
         assert!(super::is_gemini_model("gemini-1.5-pro"));
         assert!(super::is_gemini_model("gemini-1.5-flash"));
         assert!(super::is_gemini_model("gemini-2.0-flash-exp"));
-        assert!(super::is_gemini_model("gemini-pro-vision"));
-        assert!(super::is_gemini_model("gemini/gemini-pro"));
+        assert!(super::is_gemini_model("gemini-2.5-flash"));
+        assert!(super::is_gemini_model("gemini/gemini-1.5-pro"));
         
         assert!(!super::is_gemini_model("gpt-4"));
-        assert!(!super::is_gemini_model("claude-3"));
+        assert!(!super::is_gemini_model("claude-3.5-sonnet"));
         assert!(!super::is_gemini_model("unknown-model"));
     }
 
     #[test]
     fn test_gemini_client_creation() {
-        let client = super::create_llm_client("gemini-pro", Some("test-key".to_string()), 60);
+        let client = super::create_llm_client("gemini-2.5-flash", Some("test-key".to_string()), 60);
         assert!(client.is_ok());
         
-        let client = super::create_llm_client("gemini-1.5-flash", Some("test-key".to_string()), 60);
-        assert!(client.is_ok());
+        let client = client.unwrap();
+        assert_eq!(client.get_model_name(), "gemini-2.5-flash");
     }
 
     #[test]

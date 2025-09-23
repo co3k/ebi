@@ -123,7 +123,7 @@ ebi [OPTIONS] <COMMAND> [COMMAND_ARGS...]
 Options:
 - `-l, --lang <LANGUAGE>`: Override automatic language detection
 - `-m, --model <MODEL>`: LLM model to use (default: gpt-5-mini)
-- `-t, --timeout <SECONDS>`: Analysis timeout in seconds (10-300, default: 60)
+- `-t, --timeout <SECONDS>`: Analysis timeout in seconds (10-300, default: 300)
 - `-v, --verbose`: Enable verbose output
 - `-d, --debug`: Enable debug output with LLM communications
 - `-h, --help`: Display help message

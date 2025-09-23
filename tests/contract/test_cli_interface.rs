@@ -11,7 +11,7 @@ fn test_basic_cli_parsing() {
 
     assert_eq!(cli.command_and_args, vec!["bash"]);
     assert_eq!(cli.model, "gpt-5-mini");  // Default model
-    assert_eq!(cli.timeout, 60);  // Default timeout
+    assert_eq!(cli.timeout, 300);  // Default timeout
     assert!(cli.lang.is_none());
 }
 

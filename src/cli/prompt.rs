@@ -337,15 +337,13 @@ mod tests {
 
     #[test]
     fn test_prompt_text_generation() {
-        let prompter = UserPrompter::for_testing();
-
-        let high_risk_prompt = prompter.get_prompt_text(&RiskLevel::High);
+        let high_risk_prompt = LocalizedMessages::get_prompt_text(&RiskLevel::High, &OutputLanguage::English);
         assert!(high_risk_prompt.contains("HIGH RISK"));
 
-        let medium_risk_prompt = prompter.get_prompt_text(&RiskLevel::Medium);
+        let medium_risk_prompt = LocalizedMessages::get_prompt_text(&RiskLevel::Medium, &OutputLanguage::English);
         assert!(medium_risk_prompt.contains("proceed with execution"));
 
-        let low_risk_prompt = prompter.get_prompt_text(&RiskLevel::Low);
+        let low_risk_prompt = LocalizedMessages::get_prompt_text(&RiskLevel::Low, &OutputLanguage::English);
         assert!(low_risk_prompt.contains("yes"));
     }
 

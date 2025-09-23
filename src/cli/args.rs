@@ -18,7 +18,7 @@ pub struct Cli {
     pub model: String,
 
     /// Maximum time for LLM analysis in seconds (10-300)
-    #[arg(short = 't', long, default_value = "60", value_parser = validate_timeout)]
+    #[arg(short = 't', long, default_value = "300", value_parser = validate_timeout)]
     pub timeout: u64,
 
     /// Enable verbose output to stderr
@@ -188,7 +188,7 @@ mod tests {
 
         assert_eq!(cli.command_and_args, vec!["bash"]);
         assert_eq!(cli.model, "gpt-5-mini");
-        assert_eq!(cli.timeout, 60);
+        assert_eq!(cli.timeout, 300);
         assert!(cli.lang.is_none());
         assert!(!cli.verbose);
         assert!(!cli.debug);

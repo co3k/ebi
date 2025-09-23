@@ -10,7 +10,9 @@ pub use error::EbiError;
 // Re-export commonly used types
 pub use models::{
     Script, Language, ScriptSource, ScriptComponents, AnalysisRequest,
-    AnalysisResult, AnalysisReport, RiskLevel
+    AnalysisResult, AnalysisReport, RiskLevel, ExecutionDecision
 };
+
+pub use executor::ExecutionConfig;
 
 pub use cli::CliHandler;

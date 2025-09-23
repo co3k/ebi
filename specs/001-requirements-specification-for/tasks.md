@@ -76,43 +76,43 @@
 
 ### Language Detection
 
-- [ ] T019 [P] Implement language detection from CLI args, command name, and shebang in `src/parser/language.rs`
+- [x] T019 [P] Implement language detection from CLI args, command name, and shebang in `src/parser/language.rs`
 
-- [ ] T020 [P] Implement shebang parsing integration in `src/parser/shebang.rs`
+- [x] T020 [P] Implement shebang parsing integration in `src/parser/shebang.rs`
 
 ### AST Parsing
 
-- [ ] T021 [P] Implement Tree-sitter parser setup and configuration in `src/parser/tree_sitter.rs`
+- [x] T021 [P] Implement Tree-sitter parser setup and configuration in `src/parser/tree_sitter.rs`
 
-- [ ] T022 [P] Implement AST traversal and component extraction in `src/parser/extractor.rs`
+- [x] T022 [P] Implement AST traversal and component extraction in `src/parser/extractor.rs`
 
-- [ ] T023 [P] Implement security relevance classification in `src/parser/classifier.rs`
+- [x] T023 [P] Implement security relevance classification in `src/parser/classifier.rs`
 
 ### LLM Integration
 
-- [ ] T024 [P] Implement LLM client abstraction and provider configuration in `src/analyzer/llm_client.rs`
+- [x] T024 [P] Implement LLM client abstraction and provider configuration in `src/analyzer/llm_client.rs`
 
-- [ ] T025 [P] Implement prompt templates for injection and vulnerability analysis in `src/analyzer/prompts.rs`
+- [x] T025 [P] Implement prompt templates for injection and vulnerability analysis in `src/analyzer/prompts.rs`
 
-- [ ] T026 [P] Implement parallel analysis orchestration in `src/analyzer/orchestrator.rs`
+- [x] T026 [P] Implement parallel analysis orchestration in `src/analyzer/orchestrator.rs`
 
-- [ ] T027 [P] Implement analysis result aggregation in `src/analyzer/aggregator.rs`
+- [x] T027 [P] Implement analysis result aggregation in `src/analyzer/aggregator.rs`
 
 ### User Interaction
 
-- [ ] T028 Implement analysis report formatting and display in `src/cli/reporter.rs`
+- [x] T028 Implement analysis report formatting and display in `src/cli/reporter.rs`
 
-- [ ] T029 Implement user confirmation prompt handling in `src/cli/prompt.rs`
+- [x] T029 Implement user confirmation prompt handling in `src/cli/prompt.rs`
 
 ### Script Execution
 
-- [ ] T030 [P] Implement script execution wrapper in `src/executor/runner.rs`
+- [x] T030 [P] Implement script execution wrapper in `src/executor/runner.rs`
 
-- [ ] T031 [P] Implement execution configuration and environment setup in `src/executor/config.rs`
+- [x] T031 [P] Implement execution configuration and environment setup in `src/executor/config.rs`
 
 ## Phase 3.4: Integration
 
-- [ ] T032 Integrate all modules in main.rs with proper error handling and flow control
+- [x] T032 Integrate all modules in main.rs with proper error handling and flow control
 
 - [ ] T033 Implement timeout handling for LLM requests and user prompts
 

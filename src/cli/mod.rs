@@ -8,7 +8,8 @@ pub use prompt::UserPrompter;
 
 use std::io::{self, Read};
 use crate::error::EbiError;
-use crate::models::{Script, ScriptSource, Language, AnalysisReport, ExecutionConfig, ExecutionDecision, ScriptInfo};
+use crate::models::{Script, ScriptSource, Language, AnalysisReport, ExecutionDecision, ScriptInfo};
+use crate::executor::ExecutionConfig;
 use crate::parser::{ComponentExtractor, LanguageDetector};
 use crate::analyzer::{AnalysisOrchestrator, AnalysisAggregator};
 

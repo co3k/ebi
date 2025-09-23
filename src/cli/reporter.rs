@@ -226,16 +226,7 @@ impl ReportFormatter {
     }
 }
 
-impl fmt::Display for AnalysisReport {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // Default formatting without colors for compatibility
-        let formatter = ReportFormatter {
-            use_colors: false,
-            verbose: true,
-        };
-        write!(f, "{}", formatter.format_analysis_report(self))
-    }
-}
+// Display implementation moved to models/report.rs to avoid conflict
 
 #[cfg(test)]
 mod tests {

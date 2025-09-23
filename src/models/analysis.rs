@@ -19,6 +19,7 @@ pub enum AnalysisType {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AnalysisContext {
     pub language: Language,
+    pub source: crate::models::ScriptSource,
     pub script_type: Option<String>, // e.g., "installer", "config"
     pub truncated: bool,
 }
@@ -34,7 +35,7 @@ pub struct AnalysisResult {
     pub response_time_ms: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Serialize, Deserialize)]
 pub enum RiskLevel {
     None,
     Info,

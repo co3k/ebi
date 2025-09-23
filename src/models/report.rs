@@ -37,13 +37,6 @@ pub struct ExecutionDecision {
     pub analysis_report_hash: String, // For audit trail
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ExecutionConfig {
-    pub target_command: String,
-    pub target_args: Vec<String>,
-    pub original_script: String,
-    pub environment: HashMap<String, String>,
-}
 
 impl AnalysisReport {
     pub fn new(script_info: ScriptInfo) -> Self {
@@ -249,31 +242,6 @@ impl ExecutionDecision {
     }
 }
 
-impl ExecutionConfig {
-    pub fn new(target_command: String, target_args: Vec<String>, original_script: String) -> Self {
-        Self {
-            target_command,
-            target_args,
-            original_script,
-            environment: HashMap::new(),
-        }
-    }
-
-    pub fn with_environment(mut self, env: HashMap<String, String>) -> Self {
-        self.environment = env;
-        self
-    }
-
-    pub fn add_env_var(&mut self, key: String, value: String) {
-        self.environment.insert(key, value);
-    }
-
-    pub fn get_full_command(&self) -> Vec<String> {
-        let mut command = vec![self.target_command.clone()];
-        command.extend(self.target_args.clone());
-        command
-    }
-}
 
 impl std::fmt::Display for AnalysisReport {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

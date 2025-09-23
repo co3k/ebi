@@ -617,12 +617,12 @@ struct GeminiApiRequest {
     generation_config: Option<GeminiGenerationConfig>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct GeminiContent {
     parts: Vec<GeminiPart>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct GeminiPart {
     text: String,
 }

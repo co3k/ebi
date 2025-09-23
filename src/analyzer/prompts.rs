@@ -16,7 +16,7 @@ impl PromptTemplate {
         };
 
         format!(
-            r#"SECURITY ANALYSIS REQUEST
+            r#"SECURITY VULNERABILITY ANALYSIS
 
 SCRIPT LANGUAGE: {}
 SCRIPT SOURCE: {}
@@ -28,33 +28,49 @@ SCRIPT CONTENT:
 {}
 ```
 
-ANALYSIS REQUIREMENTS:
-1. Perform comprehensive security analysis
-2. Identify potential vulnerabilities
-3. Assess overall risk level (Critical/High/Medium/Low/Info)
-4. Provide specific remediation recommendations
+ANALYSIS INSTRUCTIONS:
+You are a security expert analyzing this script for vulnerabilities. Focus on providing CONCRETE, ACTIONABLE findings that help users make informed decisions.
+
+CRITICAL ANALYSIS CRITERIA:
+- ONLY flag as CRITICAL if there are immediate, severe security risks (remote code execution, privilege escalation, data destruction)
+- HIGH risk for operations requiring elevated privileges or network access with potential for abuse
+- MEDIUM risk for operations that access system resources or modify files in controlled ways
+- LOW risk for standard operations with minimal security impact
+- INFO for informational findings or best practice suggestions
+
+SPECIFIC REQUIREMENTS:
+1. **Line-by-Line Analysis**: Reference specific line numbers (e.g., "Line 42: curl command")
+2. **Context Assessment**: Consider if this is likely a legitimate script (e.g., official installers, build scripts)
+3. **Risk Justification**: Explain WHY each finding is dangerous, not just WHAT it does
+4. **Practical Impact**: Focus on realistic attack scenarios, not theoretical vulnerabilities
+5. **False Positive Avoidance**: Don't flag standard operations as dangerous unless there's clear risk
 
 LANGUAGE-SPECIFIC GUIDANCE:
 {}
 
-OUTPUT FORMAT:
-Please structure your response as follows:
+OUTPUT FORMAT (BE SPECIFIC):
 
 RISK LEVEL: [Critical/High/Medium/Low/Info]
 
-VULNERABILITIES FOUND:
-[List each vulnerability with specific line references where possible]
+SPECIFIC VULNERABILITIES:
+Line X: [Vulnerable pattern] - [Why this is dangerous] - [Attack scenario]
+Line Y: [Another finding] - [Security implication] - [Realistic impact]
 
-RISK ASSESSMENT:
-[Detailed explanation of the security implications]
+SECURITY ASSESSMENT:
+[Overall evaluation considering script purpose, source, and actual risks]
 
-RECOMMENDED ACTIONS:
-[Specific steps to mitigate identified risks]
+ACTIONABLE RECOMMENDATIONS:
+1. [Specific action] - [Why this helps]
+2. [Another recommendation] - [Security benefit]
 
-CONFIDENCE LEVEL: [High/Medium/Low]
-[Brief explanation of analysis confidence]
+CONFIDENCE: [High/Medium/Low] - [Reasoning for confidence level]
 
-IMPORTANT: Please provide all output in {} language."#,
+CONTEXT CONSIDERATIONS:
+- Is this likely a legitimate script? (installer, build tool, etc.)
+- Are the risky operations justified by the script's apparent purpose?
+- What would an attacker realistically gain from this script?
+
+IMPORTANT: Provide all output in {} language. Be precise and helpful, not alarmist."#,
             language.as_str(),
             source,
             content.len(),
@@ -126,30 +142,40 @@ IMPORTANT: Please provide all output in {} language."#,
     }
 
     fn get_bash_security_guidance() -> &'static str {
-        r#"BASH SECURITY FOCUS AREAS:
+        r#"BASH SECURITY ANALYSIS PRIORITIES:
 
-HIGH-RISK PATTERNS:
-- Command substitution: $(command) or `command`
-- eval statements: eval $variable
-- Unquoted variables: $var vs "$var"
-- Process substitution: <(command) or >(command)
-- Piped downloads: curl/wget | bash
-- File redirections to sensitive locations
-- Privilege escalation: sudo, su
-- Network operations: ssh, scp, nc
-- Destructive commands: rm -rf, dd, mkfs
+CRITICAL RISK INDICATORS (Immediate danger):
+- curl/wget | bash patterns (remote code execution)
+- eval with user input (arbitrary code execution)
+- Uncontrolled privilege escalation (sudo without validation)
+- File operations on system directories without checks (/etc, /usr, /bin)
 
-CRITICAL VULNERABILITIES:
-- Remote code execution via curl/wget pipes
-- Command injection through unvalidated input
-- Path traversal in file operations
-- Privilege escalation without proper validation
+HIGH RISK PATTERNS (Potential for abuse):
+- Network downloads to executable locations
+- Command substitution with external input: $(curl ...), `wget ...`
+- File modifications in sensitive areas
+- Process substitution: <(curl), >(command)
+- Password/credential handling in clear text
 
-MITIGATION PATTERNS:
-- Proper variable quoting
-- Input validation and sanitization
-- Use of absolute paths
-- Principle of least privilege"#
+LEGITIMATE vs SUSPICIOUS PATTERNS:
+✓ NORMAL: Package manager operations (apt, brew, yum)
+✓ NORMAL: Standard file operations in user directories
+✓ NORMAL: Environment setup and path modification
+✗ SUSPICIOUS: Downloading and executing without verification
+✗ SUSPICIOUS: Disabling security features (set +e without context)
+✗ SUSPICIOUS: Unusual network operations or data exfiltration patterns
+
+CONTEXT-AWARE ANALYSIS:
+- Official installers (Homebrew, Node.js, etc.) have expected risky patterns
+- Build scripts legitimately need compilation and system access
+- Development tools require elevated permissions for installation
+- Consider script source and apparent purpose before flagging as malicious
+
+FOCUS ON:
+1. Line-specific findings with exact line numbers
+2. Realistic attack scenarios for each finding
+3. Whether risky operations are justified by script purpose
+4. Actionable recommendations for genuine security improvements"#
     }
 
     fn get_python_security_guidance() -> &'static str {
@@ -214,35 +240,68 @@ SECURE ALTERNATIVES:
     pub fn build_context_prompt(analysis_type: &AnalysisType) -> String {
         match analysis_type {
             AnalysisType::CodeVulnerability => {
-                r#"You are a cybersecurity expert performing static analysis on a script.
-Your goal is to identify security vulnerabilities that could compromise system security,
-enable unauthorized access, or cause damage if the script is executed.
+                r#"VULNERABILITY ANALYSIS FOCUS:
+Your task is to identify genuine security vulnerabilities in this script that pose real risks to users.
 
-Focus on practical security risks and provide actionable recommendations.
-Be thorough but avoid false positives for standard, safe operations."#.to_string()
+ANALYSIS PRIORITIES:
+1. Distinguish between LEGITIMATE operations and ACTUAL threats
+2. Consider script context (official installer, development tool, etc.)
+3. Focus on exploitable vulnerabilities with realistic attack scenarios
+4. Provide specific line numbers and concrete explanations
+5. Avoid flagging standard operations as dangerous unless genuinely risky
+
+DECISION FRAMEWORK:
+- Would a malicious actor realistically exploit this?
+- Are the risky operations justified by the script's apparent purpose?
+- What specific harm could result from this vulnerability?
+- How can users mitigate genuine risks while maintaining functionality?
+
+Remember: Users need practical guidance, not theoretical security lectures."#.to_string()
             }
             AnalysisType::InjectionDetection => {
-                r#"You are a security analyst specializing in injection attack detection.
-Your goal is to identify potential injection attacks, social engineering attempts,
-or malicious content hidden in comments and string literals.
+                r#"INJECTION DETECTION FOCUS:
+Analyze comments and string literals for potential injection attacks or malicious content.
 
-Look for obfuscated content, suspicious patterns, and anything that might indicate
-an attempt to trick users or hide malicious functionality."#.to_string()
+DETECTION PRIORITIES:
+1. Obfuscated or encoded content that might hide malicious code
+2. Social engineering attempts in comments or strings
+3. Unusual patterns that suggest injection attempts
+4. Suspicious URLs, domains, or IP addresses
+5. Command injection patterns in string literals
+
+CONTEXT AWARENESS:
+- Legitimate scripts may contain complex patterns for valid reasons
+- Focus on genuinely suspicious content, not normal script complexity
+- Consider the overall script purpose when evaluating findings
+- Distinguish between technical complexity and actual malicious intent"#.to_string()
             }
         }
     }
 
     pub fn build_system_prompt(analysis_type: &AnalysisType, output_language: &OutputLanguage) -> String {
-        let base_instructions = r#"You are an AI security analyst. Provide accurate, actionable security analysis.
+        let base_instructions = r#"You are a practical cybersecurity analyst helping users make informed decisions about script safety.
 
-IMPORTANT GUIDELINES:
-- Be precise and specific in your findings
-- Provide line numbers when referencing code issues
-- Explain the security impact of each finding
-- Suggest concrete mitigation steps
-- Use the requested output format consistently
-- If no significant issues are found, clearly state this
-- Provide all output in the specified language"#;
+CORE PRINCIPLES:
+- Provide CONCRETE, LINE-SPECIFIC findings with exact line numbers
+- Explain WHY something is dangerous, not just WHAT it does
+- Consider CONTEXT: official installers vs suspicious scripts
+- Focus on REALISTIC threats, not theoretical vulnerabilities
+- Be HELPFUL, not alarmist - users need actionable guidance
+- Distinguish between LEGITIMATE risky operations and ACTUAL threats
+
+ANALYSIS APPROACH:
+1. Identify the script's apparent purpose (installer, build tool, etc.)
+2. Evaluate if risky operations are justified by that purpose
+3. Flag only genuine security concerns with clear explanations
+4. Provide specific line references: "Line 42: curl command downloads..."
+5. Suggest practical improvements where applicable
+
+RISK ASSESSMENT STANDARDS:
+- CRITICAL: Immediate, severe threats (RCE, data destruction, malware)
+- HIGH: Operations with significant abuse potential
+- MEDIUM: Standard system operations with some risk
+- LOW: Minor concerns or best practice suggestions
+- INFO: Educational findings, no immediate risk"#;
 
         let context = Self::build_context_prompt(analysis_type);
 

@@ -129,37 +129,20 @@ impl CliHandler {
 
         // Create LLM analysis orchestrator
         let api_key = self.get_api_key_for_model(self.cli.get_llm_model());
-        let orchestrator = match AnalysisOrchestrator::new(
+        let orchestrator = AnalysisOrchestrator::new(
             self.cli.get_llm_model(),
             api_key,
             self.cli.get_timeout_seconds(),
             2, // Max 2 concurrent requests
-        ) {
-            Ok(orch) => orch,
-            Err(e) => {
-                // If LLM setup fails, create a fallback report
-                let aggregator = AnalysisAggregator::new();
-                return Ok(aggregator.create_fallback_report(script_info, &e));
-            }
-        };
+        )?;
 
         // Perform LLM analysis
-        let analysis_results = match orchestrator.analyze_script_components(
+        let analysis_results = orchestrator.analyze_script_components(
             components,
             &script.language,
             &ScriptSource::Stdin,
             self.cli.get_llm_model(),
-        ).await {
-            Ok(results) => results,
-            Err(e) => {
-                if self.cli.is_verbose() {
-                    eprintln!("⚠️ LLM analysis failed: {}", e);
-                }
-                // Create fallback report for failed analysis
-                let aggregator = AnalysisAggregator::new();
-                return Ok(aggregator.create_fallback_report(script_info, &e));
-            }
-        };
+        ).await?;
 
         // Aggregate the results
         let aggregator = AnalysisAggregator::new();

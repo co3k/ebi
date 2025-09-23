@@ -102,10 +102,8 @@ impl AnalysisOrchestrator {
                 match result {
                     Ok(analysis_result) => results.push(analysis_result),
                     Err(e) => {
-                        // Log the error but continue with other analyses
-                        eprintln!("Analysis failed: {}", e);
-                        // Create a fallback result indicating failure
-                        results.push(self.create_failure_result(e));
+                        // Return error immediately instead of creating fallback
+                        return Err(e);
                     }
                 }
             }
@@ -137,20 +135,6 @@ impl AnalysisOrchestrator {
         })?
     }
 
-    fn create_failure_result(&self, error: EbiError) -> AnalysisResult {
-        use crate::models::RiskLevel;
-
-        AnalysisResult::new(
-            AnalysisType::CodeVulnerability,
-            "failed".to_string(),
-            0,
-        )
-        .with_risk_level(RiskLevel::Critical) // Fail-safe: treat failures as critical
-        .with_summary(format!("Analysis failed: {}", error))
-        .with_confidence(0.0)
-        .with_details("Analysis could not be completed due to an error. \
-                      For security, execution should be blocked.".to_string())
-    }
 
     pub async fn quick_analysis(
         &self,

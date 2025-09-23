@@ -46,15 +46,3 @@ fn aggregator_quality_validation_flags_warnings() {
     assert!(warnings.iter().any(|w| w.contains("Low confidence")));
 }
 
-#[test]
-fn fallback_report_blocks_execution_and_sets_critical_risk() {
-    let aggregator = AnalysisAggregator::new();
-    let script_info = ScriptInfo::new(Language::Python, 200, 20);
-    let error = ebi::error::EbiError::AnalysisTimeout { timeout: 30 };
-
-    let report = aggregator.create_fallback_report(script_info, &error);
-
-    assert_eq!(report.overall_risk, RiskLevel::Critical);
-    assert_eq!(report.execution_recommendation, ExecutionRecommendation::Blocked);
-    assert!(report.execution_advice.as_ref().unwrap().contains("BLOCK EXECUTION"));
-}

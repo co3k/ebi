@@ -24,17 +24,20 @@ ebi --version
 
 ### Set your LLM API Key
 ```bash
-# For Gemini (default)
-export EBI_LLM_API_KEY="your-gemini-api-key"
-
 # For OpenAI
-export EBI_LLM_API_KEY="sk-your-openai-key"
+export OPENAI_API_KEY="sk-your-openai-key"
+
+# For Google Gemini
+export GEMINI_API_KEY="your-gemini-api-key"
+
+# For Anthropic Claude
+export ANTHROPIC_API_KEY="your-anthropic-api-key"
 ```
 
 ### Optional: Set defaults
 ```bash
 # Change default model
-export EBI_DEFAULT_MODEL="gpt-4-turbo"
+export EBI_DEFAULT_MODEL="gemini-2.5-flash"
 
 # Change default timeout
 export EBI_DEFAULT_TIMEOUT=120
@@ -108,7 +111,7 @@ curl -sL https://example.com/install.sh | ebi bash
 
 ```bash
 # Analyze before running
-cat suspicious_fix.sh | ebi --model gpt-4-turbo bash
+cat suspicious_fix.sh | ebi --model gemini-2.5-flash bash
 ```
 
 ### Scenario 3: CI/CD Pipeline Safety
@@ -133,7 +136,7 @@ cat vendor/build.sh | ebi --timeout 30 bash || exit 1
 
 ### Use a different AI model
 ```bash
-curl -sL script.sh | ebi --model gpt-4-turbo bash
+curl -sL script.sh | ebi --model gemini-2.5-flash bash
 ```
 
 ### Increase timeout for large scripts
@@ -209,7 +212,7 @@ cat large_script.sh | ebi --timeout 300 bash
 
 1. **Always use EBI for untrusted scripts** - Better safe than sorry
 2. **Review the analysis carefully** - AI isn't perfect
-3. **Use appropriate models** - GPT-4 for complex scripts, Gemini for speed
+3. **Use appropriate models for your needs**
 4. **Set reasonable timeouts** - Balance between safety and convenience
 5. **Keep your API keys secure** - Never share or commit them
 

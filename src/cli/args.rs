@@ -12,7 +12,7 @@ pub struct Cli {
     pub lang: Option<String>,
 
     /// LLM model to use for analysis
-    #[arg(short = 'm', long, default_value = "gemini-pro")]
+    #[arg(short = 'm', long, default_value = "gpt-5-mini")]
     pub model: String,
 
     /// Maximum time for LLM analysis in seconds (10-300)
@@ -134,7 +134,7 @@ mod tests {
         let cli = Cli::try_parse_from(args).unwrap();
 
         assert_eq!(cli.command_and_args, vec!["bash"]);
-        assert_eq!(cli.model, "gemini-pro");
+        assert_eq!(cli.model, "gpt-5-mini");
         assert_eq!(cli.timeout, 60);
         assert!(cli.lang.is_none());
         assert!(!cli.verbose);
@@ -146,7 +146,7 @@ mod tests {
         let args = vec![
             "ebi",
             "--lang", "python",
-            "--model", "gpt-4-turbo",
+            "--model", "gemini-2.5-flash",
             "--timeout", "120",
             "--verbose",
             "python",
@@ -157,7 +157,7 @@ mod tests {
         let cli = Cli::try_parse_from(args).unwrap();
 
         assert_eq!(cli.lang, Some("python".to_string()));
-        assert_eq!(cli.model, "gpt-4-turbo");
+        assert_eq!(cli.model, "gemini-2.5-flash");
         assert_eq!(cli.timeout, 120);
         assert!(cli.verbose);
         assert!(!cli.debug);
@@ -166,12 +166,12 @@ mod tests {
 
     #[test]
     fn test_cli_short_flags() {
-        let args = vec!["ebi", "-l", "bash", "-m", "claude-3", "-t", "30", "-v", "sh", "-c", "echo test"];
+        let args = vec!["ebi", "-l", "bash", "-m", "claude-sonnet-4", "-t", "30", "-v", "sh", "-c", "echo test"];
 
         let cli = Cli::try_parse_from(args).unwrap();
 
         assert_eq!(cli.lang, Some("bash".to_string()));
-        assert_eq!(cli.model, "claude-3");
+        assert_eq!(cli.model, "claude-sonnet-4");
         assert_eq!(cli.timeout, 30);
         assert!(cli.verbose);
         assert_eq!(cli.command_and_args, vec!["sh", "-c", "echo test"]);

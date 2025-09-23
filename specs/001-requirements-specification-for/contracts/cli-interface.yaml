@@ -17,10 +17,9 @@
 ### --model, -m <MODEL>
 - Type: String
 - Required: No
-- Default: gemini-pro
-- Values: gemini-pro, gpt-4-turbo, claude-3
+- Default: gpt-5-mini
 - Description: LLM model for analysis
-- Example: `--model gpt-4-turbo`
+- Example: `--model gemini-2.5-flash`
 
 ### --timeout, -t <SECONDS>
 - Type: Integer
@@ -112,7 +111,7 @@ cat ambiguous.script | ebi --lang bash sh
 ### With Options
 ```bash
 # Use different model with longer timeout
-curl -sL installer.sh | ebi --model gpt-4-turbo --timeout 120 bash
+curl -sL installer.sh | ebi --model gemini-2.5-flash --timeout 120 bash
 
 # Debug mode for troubleshooting
 cat script.sh | ebi --debug bash
@@ -142,7 +141,7 @@ echo "rm -rf /" | ebi bash
 ### EBI_DEFAULT_MODEL
 - Type: String
 - Description: Override default model
-- Example: `export EBI_DEFAULT_MODEL=gpt-4-turbo`
+- Example: `export EBI_DEFAULT_MODEL=gemini-2.5-flash`
 
 ### EBI_DEFAULT_TIMEOUT
 - Type: Integer

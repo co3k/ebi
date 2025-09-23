@@ -10,7 +10,7 @@ fn test_basic_cli_parsing() {
     let cli = cli.unwrap();
 
     assert_eq!(cli.command_and_args, vec!["bash"]);
-    assert_eq!(cli.model, "gemini-pro");  // Default model
+    assert_eq!(cli.model, "gpt-5-mini");  // Default model
     assert_eq!(cli.timeout, 60);  // Default timeout
     assert!(cli.lang.is_none());
 }
@@ -20,7 +20,7 @@ fn test_cli_with_all_options() {
     let args = vec![
         "ebi",
         "--lang", "python",
-        "--model", "gpt-4-turbo",
+        "--model", "gemini-2.5-flash",
         "--timeout", "120",
         "--verbose",
         "python",
@@ -33,7 +33,7 @@ fn test_cli_with_all_options() {
     let cli = cli.unwrap();
 
     assert_eq!(cli.lang, Some("python".to_string()));
-    assert_eq!(cli.model, "gpt-4-turbo");
+    assert_eq!(cli.model, "gemini-2.5-flash");
     assert_eq!(cli.timeout, 120);
     assert!(cli.verbose);
     assert_eq!(cli.command_and_args, vec!["python", "-", "--some-arg"]);
@@ -41,14 +41,14 @@ fn test_cli_with_all_options() {
 
 #[test]
 fn test_cli_short_flags() {
-    let args = vec!["ebi", "-l", "bash", "-m", "claude-3", "-t", "30", "-v", "sh", "-c", "echo test"];
+    let args = vec!["ebi", "-l", "bash", "-m", "claude-sonnet-4", "-t", "30", "-v", "sh", "-c", "echo test"];
 
     let cli = ebi::cli::args::Cli::try_parse_from(args);
     assert!(cli.is_ok());
     let cli = cli.unwrap();
 
     assert_eq!(cli.lang, Some("bash".to_string()));
-    assert_eq!(cli.model, "claude-3");
+    assert_eq!(cli.model, "claude-sonnet-4");
     assert_eq!(cli.timeout, 30);
     assert!(cli.verbose);
     assert_eq!(cli.command_and_args, vec!["sh", "-c", "echo test"]);

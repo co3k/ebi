@@ -14,7 +14,7 @@ async fn test_llm_analysis_request_format() {
             "id": "chatcmpl-123",
             "object": "chat.completion",
             "created": 1677652288,
-            "model": "gemini-pro",
+            "model": "gpt-5-mini",
             "choices": [{
                 "index": 0,
                 "message": {
@@ -47,7 +47,7 @@ async fn test_llm_analysis_request_format() {
             script_type: Some("simple".to_string()),
             truncated: false,
         },
-        model: "gemini-pro".to_string(),
+        model: "gpt-5-mini".to_string(),
         timeout_seconds: 60,
     };
 
@@ -82,7 +82,7 @@ async fn test_llm_api_timeout() {
             script_type: None,
             truncated: false,
         },
-        model: "gemini-pro".to_string(),
+        model: "gpt-5-mini".to_string(),
         timeout_seconds: 1,  // Short timeout
     };
 
@@ -106,7 +106,7 @@ async fn test_llm_api_unavailable() {
             script_type: Some("dangerous".to_string()),
             truncated: false,
         },
-        model: "gemini-pro".to_string(),
+        model: "gpt-5-mini".to_string(),
         timeout_seconds: 5,
     };
 

@@ -59,11 +59,8 @@ components:
       properties:
         model:
           type: string
-          enum:
-            - gemini-pro
-            - gpt-4-turbo
-            - claude-3
-          example: gemini-pro
+          description: The LLM model to use
+          example: gpt-5-mini
         prompt:
           type: string
           description: The analysis prompt including script content

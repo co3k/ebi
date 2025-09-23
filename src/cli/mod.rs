@@ -128,9 +128,7 @@ impl CliHandler {
         );
 
         // Create LLM analysis orchestrator
-        let api_key = std::env::var("EBI_LLM_API_KEY")
-            .or_else(|_| std::env::var("OPENAI_API_KEY"))
-            .ok();
+        let api_key = self.get_api_key_for_model(self.cli.get_llm_model());
         let orchestrator = match AnalysisOrchestrator::new(
             self.cli.get_llm_model(),
             api_key,
@@ -226,5 +224,24 @@ impl CliHandler {
         }
 
         Ok(exit_code)
+    }
+
+    fn get_api_key_for_model(&self, model: &str) -> Option<String> {
+        // Determine which API key to use based on model prefix
+        if model.starts_with("gpt-")
+            || model.starts_with("o1-")
+            || model.starts_with("o3-")
+            || model.starts_with("o4-") {
+            std::env::var("OPENAI_API_KEY").ok()
+        } else if model.starts_with("gemini-") {
+            std::env::var("GEMINI_API_KEY").ok()
+        } else if model.starts_with("claude-") {
+            std::env::var("ANTHROPIC_API_KEY").ok()
+        } else {
+            // Fallback to generic EBI_LLM_API_KEY or OPENAI_API_KEY
+            std::env::var("EBI_LLM_API_KEY")
+                .or_else(|_| std::env::var("OPENAI_API_KEY"))
+                .ok()
+        }
     }
 }

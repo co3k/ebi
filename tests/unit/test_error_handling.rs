@@ -14,7 +14,7 @@ fn extractor_rejects_unknown_language() {
 
 #[test]
 fn llm_client_creation_fails_for_unsupported_model() {
-    let client = create_llm_client("claude-3", Some("test".to_string()), 60);
+    let client = create_llm_client("unsupported-model", Some("test".to_string()), 60);
     assert!(client.is_err());
 }
 

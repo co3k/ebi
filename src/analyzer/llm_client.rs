@@ -366,7 +366,7 @@ mod tests {
 
     #[test]
     fn test_client_creation() {
-        let client = create_llm_client("claude-3", Some("test-key".to_string()), 60);
+        let client = create_llm_client("unsupported-model", Some("test-key".to_string()), 60);
         assert!(client.is_err());
     }
 }

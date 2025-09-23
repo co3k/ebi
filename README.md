@@ -100,10 +100,7 @@ Options:
 ### Examples
 
 ```bash
-# Analyze Python script with Claude model
-cat script.py | ebi --model claude-3.5-sonnet python
-
-# Analyze with Gemini model
+# Analyze Python script with custom model
 cat script.py | ebi --model gemini-2.5-flash python
 
 # Analyze with verbose output
@@ -114,9 +111,6 @@ cat ambiguous_script | ebi --lang bash sh
 
 # Increase timeout for large scripts
 cat large_script.py | ebi --timeout 120 python
-
-# Use Claude Haiku for faster analysis
-cat simple_script.sh | ebi --model claude-3.5-haiku bash
 ```
 
 ## Understanding Risk Levels

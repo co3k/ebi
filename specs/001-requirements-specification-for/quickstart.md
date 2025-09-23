@@ -2,7 +2,7 @@
 
 ## What is EBI?
 
-EBI (Execute But Inspect) is a security tool that analyzes scripts before execution. It acts as a protective wrapper around any command, using AI to detect malicious code, vulnerabilities, and hidden instructions.
+EBI (Evaluate Before Invocation) is a security tool that analyzes scripts before execution. It acts as a protective wrapper around any command, using AI to detect malicious code, vulnerabilities, and hidden instructions.
 
 ## Installation
 

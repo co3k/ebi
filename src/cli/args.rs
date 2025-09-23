@@ -3,7 +3,7 @@ use crate::error::EbiError;
 
 #[derive(Parser, Debug)]
 #[command(name = "ebi")]
-#[command(about = "Execute But Inspect - Script analysis tool using LLMs")]
+#[command(about = "Evaluate Before Invocation - Script analysis tool using LLMs")]
 #[command(long_about = None)]
 #[command(version)]
 pub struct Cli {

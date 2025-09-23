@@ -2,7 +2,7 @@
 name = "ebi"
 version = "0.1.0"
 edition = "2021"
-description = "Execute But Inspect - Script analysis tool using LLMs"
+description = "Evaluate Before Invocation - Script analysis tool using LLMs"
 license = "MIT"
 repository = "https://github.com/yourusername/ebi"
 

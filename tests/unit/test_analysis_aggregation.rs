@@ -47,14 +47,14 @@ fn aggregator_quality_validation_flags_warnings() {
 }
 
 #[test]
-fn fallback_report_blocks_execution_and_sets_critical_risk() {
+fn fallback_report_sets_high_risk_and_recommends_caution() {
     let aggregator = AnalysisAggregator::new();
     let script_info = ScriptInfo::new(Language::Python, 200, 20);
     let error = ebi::error::EbiError::AnalysisTimeout { timeout: 30 };
 
     let report = aggregator.create_fallback_report(script_info, &error);
 
-    assert_eq!(report.overall_risk, RiskLevel::Critical);
-    assert_eq!(report.execution_recommendation, ExecutionRecommendation::Blocked);
-    assert!(report.execution_advice.as_ref().unwrap().contains("BLOCK EXECUTION"));
+    assert_eq!(report.overall_risk, RiskLevel::High);
+    assert_eq!(report.execution_recommendation, ExecutionRecommendation::Dangerous);
+    assert!(report.execution_advice.as_ref().unwrap().contains("CAUTION REQUIRED"));
 }

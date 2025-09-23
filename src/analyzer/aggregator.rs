@@ -336,8 +336,8 @@ impl AnalysisAggregator {
     ) -> AnalysisReport {
         let mut report = AnalysisReport::new(script_info);
 
-        // Set critical risk for any analysis failure (fail-safe approach)
-        report.overall_risk = RiskLevel::Critical;
+        // Set high risk for LLM analysis failure (not critical)
+        report.overall_risk = RiskLevel::High;
 
         // Create a fallback analysis result
         let fallback_result = AnalysisResult::new(
@@ -345,20 +345,20 @@ impl AnalysisAggregator {
             "failed".to_string(),
             0,
         )
-        .with_risk_level(RiskLevel::Critical)
+        .with_risk_level(RiskLevel::High)
         .with_summary(format!("Analysis failed: {}", error))
         .with_confidence(0.0)
-        .with_details("LLM analysis could not be completed. For security, execution is blocked.".to_string());
+        .with_details("LLM analysis could not be completed. Manual review recommended before execution.".to_string());
 
         report = report.with_code_analysis(fallback_result);
 
-        report.execution_recommendation = ExecutionRecommendation::Blocked;
+        report.execution_recommendation = ExecutionRecommendation::Dangerous;
         report.execution_advice = Some(
-            "BLOCK EXECUTION: Analysis failed. Cannot assess security risks safely.".to_string(),
+            "CAUTION REQUIRED: Analysis failed. Manual review recommended before execution.".to_string(),
         );
 
         report.analysis_summary = format!(
-            "Analysis of {} script failed due to: {}. Execution blocked for safety.",
+            "Analysis of {} script failed due to: {}. Manual review recommended.",
             report.script_info.language.as_str(),
             error
         );
@@ -449,13 +449,13 @@ mod tests {
 
         let report = aggregator.create_fallback_report(script_info, &error);
 
-        assert_eq!(report.overall_risk, RiskLevel::Critical);
-        assert_eq!(report.execution_recommendation, ExecutionRecommendation::Blocked);
+        assert_eq!(report.overall_risk, RiskLevel::High);
+        assert_eq!(report.execution_recommendation, ExecutionRecommendation::Dangerous);
         assert!(report
             .execution_advice
             .as_ref()
             .unwrap()
-            .contains("BLOCK EXECUTION"));
+            .contains("CAUTION REQUIRED"));
         assert!(report.analysis_summary.contains("failed"));
     }
 

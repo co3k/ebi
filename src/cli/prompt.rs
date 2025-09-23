@@ -113,8 +113,7 @@ impl UserPrompter {
                  Type 'yes' to execute, 'no' to cancel, or 'review' to see full details: "
             }
             RiskLevel::Low | RiskLevel::Info | RiskLevel::None => {
-                "Do you want to proceed with script execution? \n\
-                 Type 'yes' to execute, 'no' to cancel: "
+                "Type 'yes' to execute, 'no' to cancel: "
             }
         }
         .to_string()
@@ -129,37 +128,99 @@ impl UserPrompter {
     }
 
     fn get_user_input_blocking(&self) -> Result<String, EbiError> {
+        use std::fs::File;
+        use std::io::Read;
+
+        // Try to open /dev/tty for reading when stdin is piped
         let mut input = String::new();
-        match io::stdin().read_line(&mut input) {
-            Ok(0) => {
-                // EOF received (Ctrl+D)
-                Ok("no".to_string())
+
+        // Check if stdin is a terminal
+        let is_stdin_terminal = atty::is(atty::Stream::Stdin);
+
+        if !is_stdin_terminal {
+            // stdin is piped, try to read from /dev/tty
+            match File::open("/dev/tty") {
+                Ok(mut tty) => {
+                    let mut buf = [0u8; 256];
+                    match tty.read(&mut buf) {
+                        Ok(0) => Ok("no".to_string()),
+                        Ok(n) => {
+                            let response = String::from_utf8_lossy(&buf[..n]);
+                            Ok(response.trim().to_lowercase())
+                        }
+                        Err(_) => Err(EbiError::UserInputTimeout),
+                    }
+                }
+                Err(_) => {
+                    // Cannot open /dev/tty, default to decline
+                    eprintln!("⚠️  Cannot read user input (stdin is piped). Defaulting to decline for safety.");
+                    Ok("no".to_string())
+                }
             }
-            Ok(_) => Ok(input.trim().to_lowercase()),
-            Err(_) => Err(EbiError::UserInputTimeout),
+        } else {
+            // stdin is a terminal, use normal stdin
+            match io::stdin().read_line(&mut input) {
+                Ok(0) => {
+                    // EOF received (Ctrl+D)
+                    Ok("no".to_string())
+                }
+                Ok(_) => Ok(input.trim().to_lowercase()),
+                Err(_) => Err(EbiError::UserInputTimeout),
+            }
         }
     }
 
     fn get_user_input_with_timeout(&self, timeout: Duration) -> Result<String, EbiError> {
         use std::sync::mpsc;
         use std::thread;
+        use std::fs::File;
+        use std::io::Read;
 
         let (sender, receiver) = mpsc::channel();
         let start_time = Instant::now();
 
-        // Spawn a thread to read from stdin
+        // Check if stdin is a terminal
+        let is_stdin_terminal = atty::is(atty::Stream::Stdin);
+
+        // Spawn a thread to read from stdin or /dev/tty
         thread::spawn(move || {
-            let mut input = String::new();
-            match io::stdin().read_line(&mut input) {
-                Ok(0) => {
-                    // EOF
-                    let _ = sender.send("no".to_string());
+            if !is_stdin_terminal {
+                // stdin is piped, try to read from /dev/tty
+                match File::open("/dev/tty") {
+                    Ok(mut tty) => {
+                        let mut buf = [0u8; 256];
+                        match tty.read(&mut buf) {
+                            Ok(0) => {
+                                let _ = sender.send("no".to_string());
+                            }
+                            Ok(n) => {
+                                let response = String::from_utf8_lossy(&buf[..n]);
+                                let _ = sender.send(response.trim().to_lowercase());
+                            }
+                            Err(_) => {
+                                let _ = sender.send("error".to_string());
+                            }
+                        }
+                    }
+                    Err(_) => {
+                        // Cannot open /dev/tty
+                        let _ = sender.send("no".to_string());
+                    }
                 }
-                Ok(_) => {
-                    let _ = sender.send(input.trim().to_lowercase());
-                }
-                Err(_) => {
-                    let _ = sender.send("error".to_string());
+            } else {
+                // stdin is a terminal, use normal stdin
+                let mut input = String::new();
+                match io::stdin().read_line(&mut input) {
+                    Ok(0) => {
+                        // EOF
+                        let _ = sender.send("no".to_string());
+                    }
+                    Ok(_) => {
+                        let _ = sender.send(input.trim().to_lowercase());
+                    }
+                    Err(_) => {
+                        let _ = sender.send("error".to_string());
+                    }
                 }
             }
         });

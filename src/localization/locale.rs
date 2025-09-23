@@ -1,7 +1,244 @@
-use crate::models::OutputLanguage;
+use crate::models::{OutputLanguage, SecurityRelevance, RiskLevel, ExecutionRecommendation};
 use std::env;
 
 pub struct LocaleDetector;
+
+pub struct LocalizedMessages;
+
+impl LocalizedMessages {
+    pub fn get_risk_explanation(relevance: &SecurityRelevance, language: &OutputLanguage) -> &'static str {
+        match (relevance, language) {
+            (SecurityRelevance::Critical, OutputLanguage::Japanese) => {
+                "システムに深刻な損害を与える可能性、任意コードの実行、またはシステムセキュリティの侵害を引き起こす可能性のある操作を含みます"
+            }
+            (SecurityRelevance::High, OutputLanguage::Japanese) => {
+                "昇格した権限を必要とする操作、ネットワーク通信、またはシステム状態の変更を含みます"
+            }
+            (SecurityRelevance::Medium, OutputLanguage::Japanese) => {
+                "システムリソース、環境変数、またはファイルI/Oにアクセスする操作を含みます"
+            }
+            (SecurityRelevance::Low, OutputLanguage::Japanese) => {
+                "セキュリティへの影響が最小限の標準的な操作のみを含みます"
+            }
+            (SecurityRelevance::Critical, OutputLanguage::English) => {
+                "Contains operations that could cause immediate system damage, execute arbitrary code, or compromise system security"
+            }
+            (SecurityRelevance::High, OutputLanguage::English) => {
+                "Contains operations that require elevated privileges, perform network communication, or modify system state"
+            }
+            (SecurityRelevance::Medium, OutputLanguage::English) => {
+                "Contains operations that access system resources, environment variables, or perform file I/O"
+            }
+            (SecurityRelevance::Low, OutputLanguage::English) => {
+                "Contains only standard operations with minimal security impact"
+            }
+        }
+    }
+
+    pub fn get_execution_guidance(risk: &RiskLevel, language: &OutputLanguage) -> (ExecutionRecommendation, String) {
+        match (risk, language) {
+            (RiskLevel::Critical, OutputLanguage::Japanese) => (
+                ExecutionRecommendation::Blocked,
+                "実行をブロック: このスクリプトには、システムに深刻な損害や侵害を引き起こす可能性のある重大なセキュリティリスクが含まれています。実行前に手動でのレビューが必要です。".to_string(),
+            ),
+            (RiskLevel::High, OutputLanguage::Japanese) => (
+                ExecutionRecommendation::Dangerous,
+                "注意が必要: このスクリプトには高リスクの操作が含まれています。特定された問題を慎重に確認し、より安全な代替手段を検討してください。ソースを信頼し、影響を理解している場合のみ実行してください。".to_string(),
+            ),
+            (RiskLevel::Medium, OutputLanguage::Japanese) => (
+                ExecutionRecommendation::Caution,
+                "レビュー推奨: このスクリプトはシステムリソースにアクセスする操作を実行します。分析結果を確認し、スクリプトが何を行うかを理解してください。".to_string(),
+            ),
+            (RiskLevel::Low, OutputLanguage::Japanese) => (
+                ExecutionRecommendation::Safe,
+                "低リスク: このスクリプトはセキュリティへの影響が最小限の標準的な操作を実行するようです。標準的な予防措置を適用してください。".to_string(),
+            ),
+            (RiskLevel::Info | RiskLevel::None, OutputLanguage::Japanese) => (
+                ExecutionRecommendation::Safe,
+                "最小リスク: 重大なセキュリティ上の問題は特定されませんでした。このスクリプトは安全に実行できるようです。".to_string(),
+            ),
+            (RiskLevel::Critical, OutputLanguage::English) => (
+                ExecutionRecommendation::Blocked,
+                "BLOCK EXECUTION: This script contains critical security risks that could cause immediate system damage or compromise. Manual review required before execution.".to_string(),
+            ),
+            (RiskLevel::High, OutputLanguage::English) => (
+                ExecutionRecommendation::Dangerous,
+                "CAUTION REQUIRED: This script contains high-risk operations. Carefully review the identified issues and consider safer alternatives. Execute only if you trust the source and understand the implications.".to_string(),
+            ),
+            (RiskLevel::Medium, OutputLanguage::English) => (
+                ExecutionRecommendation::Caution,
+                "REVIEW RECOMMENDED: This script performs operations that access system resources. Review the analysis results and ensure you understand what the script will do.".to_string(),
+            ),
+            (RiskLevel::Low, OutputLanguage::English) => (
+                ExecutionRecommendation::Safe,
+                "LOW RISK: This script appears to perform standard operations with minimal security impact. Standard precautions apply.".to_string(),
+            ),
+            (RiskLevel::Info | RiskLevel::None, OutputLanguage::English) => (
+                ExecutionRecommendation::Safe,
+                "MINIMAL RISK: No significant security concerns identified. This script appears safe to execute.".to_string(),
+            ),
+        }
+    }
+
+    pub fn format_analysis_summary(
+        language_str: &str,
+        line_count: usize,
+        size_bytes: usize,
+        language: &OutputLanguage,
+    ) -> String {
+        match language {
+            OutputLanguage::Japanese => {
+                format!("{}スクリプトを分析しました（{}行、{}バイト）", language_str, line_count, size_bytes)
+            }
+            OutputLanguage::English => {
+                format!("Analyzed {} script ({} lines, {} bytes)", language_str, line_count, size_bytes)
+            }
+        }
+    }
+
+    pub fn format_static_analysis_summary(
+        critical_nodes: usize,
+        high_risk_nodes: usize,
+        language: &OutputLanguage,
+    ) -> Option<String> {
+        if critical_nodes > 0 || high_risk_nodes > 0 {
+            match language {
+                OutputLanguage::Japanese => Some(format!(
+                    "静的解析で{}個の重要な操作と{}個の高リスク操作が見つかりました",
+                    critical_nodes, high_risk_nodes
+                )),
+                OutputLanguage::English => Some(format!(
+                    "Static analysis found {} critical and {} high-risk operations",
+                    critical_nodes, high_risk_nodes
+                )),
+            }
+        } else {
+            None
+        }
+    }
+
+    pub fn format_code_vulnerability_analysis(
+        risk_level: &str,
+        confidence: f32,
+        language: &OutputLanguage,
+    ) -> String {
+        match language {
+            OutputLanguage::Japanese => {
+                format!("コード脆弱性分析: {}リスク（信頼度: {:.0}%）", risk_level, confidence * 100.0)
+            }
+            OutputLanguage::English => {
+                format!("Code vulnerability analysis: {} risk (confidence: {:.0}%)", risk_level, confidence * 100.0)
+            }
+        }
+    }
+
+    pub fn format_injection_detection(
+        risk_level: &str,
+        confidence: f32,
+        language: &OutputLanguage,
+    ) -> String {
+        match language {
+            OutputLanguage::Japanese => {
+                format!("インジェクション検出: {}リスク（信頼度: {:.0}%）", risk_level, confidence * 100.0)
+            }
+            OutputLanguage::English => {
+                format!("Injection detection: {} risk (confidence: {:.0}%)", risk_level, confidence * 100.0)
+            }
+        }
+    }
+
+    pub fn format_overall_risk_assessment(
+        risk_level: &str,
+        language: &OutputLanguage,
+    ) -> String {
+        match language {
+            OutputLanguage::Japanese => {
+                format!("総合リスク評価: {}", risk_level)
+            }
+            OutputLanguage::English => {
+                format!("Overall risk assessment: {}", risk_level)
+            }
+        }
+    }
+
+    pub fn get_prompt_message(risk_level: &RiskLevel, language: &OutputLanguage) -> &'static str {
+        match (risk_level, language) {
+            (RiskLevel::Critical, OutputLanguage::Japanese) => {
+                "🚨 重大リスクが検出されました - 安全のため実行は自動的にブロックされます。"
+            }
+            (RiskLevel::High, OutputLanguage::Japanese) => {
+                "⚠️  高リスクが検出されました\n\
+                 このスクリプトは危険な操作を実行します。\n\
+                 実行前に分析結果を慎重に確認してください。"
+            }
+            (RiskLevel::Medium, OutputLanguage::Japanese) => {
+                "🔸 中リスクが検出されました\n\
+                 このスクリプトはシステムリソースにアクセスします。\n\
+                 実行前に分析結果を確認してください。"
+            }
+            (RiskLevel::Low | RiskLevel::None, OutputLanguage::Japanese) => {
+                "✅ 低リスクが検出されました\n\
+                 このスクリプトは比較的安全です。"
+            }
+            (RiskLevel::Info, OutputLanguage::Japanese) => {
+                "ℹ️  分析完了\n\
+                 重大なセキュリティ上の問題は特定されませんでした。"
+            }
+            (RiskLevel::Critical, OutputLanguage::English) => {
+                "🚨 CRITICAL RISK DETECTED - Execution automatically blocked for safety."
+            }
+            (RiskLevel::High, OutputLanguage::English) => {
+                "⚠️  HIGH RISK DETECTED\n\
+                 This script performs operations that could be dangerous.\n\
+                 Please review the analysis carefully before proceeding."
+            }
+            (RiskLevel::Medium, OutputLanguage::English) => {
+                "🔸 MEDIUM RISK DETECTED\n\
+                 This script accesses system resources.\n\
+                 Please review the analysis before proceeding."
+            }
+            (RiskLevel::Low | RiskLevel::None, OutputLanguage::English) => {
+                "✅ LOW RISK DETECTED\n\
+                 This script appears relatively safe."
+            }
+            (RiskLevel::Info, OutputLanguage::English) => {
+                "ℹ️  ANALYSIS COMPLETE\n\
+                 No significant security concerns identified."
+            }
+        }
+    }
+
+    pub fn get_prompt_text(risk_level: &RiskLevel, language: &OutputLanguage) -> &'static str {
+        match (risk_level, language) {
+            (RiskLevel::Critical, _) => {
+                // This should not be shown under normal operation
+                "⚠️  Execution is blocked due to CRITICAL risk."
+            }
+            (RiskLevel::High, OutputLanguage::Japanese) => {
+                "⚠️  高リスクにも関わらず実行を続行しますか？ \n\
+                 実行するには 'yes'、キャンセルするには 'no'、詳細を確認するには 'review' を入力してください: "
+            }
+            (RiskLevel::Medium, OutputLanguage::Japanese) => {
+                "🔸 実行を続行しますか？ \n\
+                 実行するには 'yes'、キャンセルするには 'no'、詳細を確認するには 'review' を入力してください: "
+            }
+            (RiskLevel::Low | RiskLevel::Info | RiskLevel::None, OutputLanguage::Japanese) => {
+                "実行するには 'yes'、キャンセルするには 'no' を入力してください: "
+            }
+            (RiskLevel::High, OutputLanguage::English) => {
+                "⚠️  Do you want to proceed with execution despite the HIGH RISK? \n\
+                 Type 'yes' to execute anyway, 'no' to cancel, or 'review' to see full details: "
+            }
+            (RiskLevel::Medium, OutputLanguage::English) => {
+                "🔸 Do you want to proceed with execution? \n\
+                 Type 'yes' to execute, 'no' to cancel, or 'review' to see full details: "
+            }
+            (RiskLevel::Low | RiskLevel::Info | RiskLevel::None, OutputLanguage::English) => {
+                "Type 'yes' to execute, 'no' to cancel: "
+            }
+        }
+    }
+}
 
 impl LocaleDetector {
     /// Detect the system locale and return the appropriate OutputLanguage

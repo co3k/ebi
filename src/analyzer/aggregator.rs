@@ -1,8 +1,9 @@
 use crate::models::{
     AnalysisResult, AnalysisReport, RiskLevel, AnalysisType,
-    ScriptInfo, ScriptComponents, ExecutionRecommendation, SecurityRelevance,
+    ScriptInfo, ScriptComponents, ExecutionRecommendation, SecurityRelevance, OutputLanguage,
 };
 use crate::parser::SecurityClassifier;
+use crate::localization::locale::LocalizedMessages;
 use crate::error::EbiError;
 
 pub struct AnalysisAggregator {
@@ -21,6 +22,7 @@ impl AnalysisAggregator {
         results: Vec<AnalysisResult>,
         script_info: ScriptInfo,
         components: &ScriptComponents,
+        output_language: &OutputLanguage,
     ) -> Result<AnalysisReport, EbiError> {
         if results.is_empty() {
             return Err(EbiError::LlmClientError(
@@ -51,7 +53,7 @@ impl AnalysisAggregator {
         report.overall_risk = overall_risk;
 
         // Add risk explanations and recommendations
-        report = self.enrich_report_with_insights(report, components);
+        report = self.enrich_report_with_insights(report, components, output_language);
 
         Ok(report)
     }
@@ -197,15 +199,16 @@ impl AnalysisAggregator {
         &self,
         mut report: AnalysisReport,
         components: &ScriptComponents,
+        output_language: &OutputLanguage,
     ) -> AnalysisReport {
         // Add execution recommendation
-        let (recommendation, advice) = self.generate_execution_guidance(&report, components);
+        let (recommendation, advice) = LocalizedMessages::get_execution_guidance(&report.overall_risk, output_language);
         report.execution_recommendation = recommendation;
         report.execution_advice = Some(advice);
 
         // Add risk explanation
         let relevance = self.map_risk_to_relevance(&report.overall_risk);
-        let risk_explanation = self.classifier.get_risk_explanation(&relevance);
+        let risk_explanation = LocalizedMessages::get_risk_explanation(&relevance, output_language);
         report.risk_explanation = Some(risk_explanation.to_string());
 
         // Add mitigation suggestions
@@ -213,7 +216,7 @@ impl AnalysisAggregator {
         report.mitigation_suggestions = suggestions;
 
         // Add summary statistics
-        report.analysis_summary = self.generate_analysis_summary(&report, components);
+        report.analysis_summary = self.generate_analysis_summary(&report, components, output_language);
 
         report
     }
@@ -236,83 +239,50 @@ impl AnalysisAggregator {
         }
     }
 
-    fn generate_execution_guidance(
-        &self,
-        report: &AnalysisReport,
-        _components: &ScriptComponents,
-    ) -> (ExecutionRecommendation, String) {
-        match report.overall_risk {
-            RiskLevel::Critical => (
-                ExecutionRecommendation::Blocked,
-                "BLOCK EXECUTION: This script contains critical security risks that could \
-                 cause immediate system damage or compromise. Manual review required before execution.".to_string(),
-            ),
-            RiskLevel::High => (
-                ExecutionRecommendation::Dangerous,
-                "CAUTION REQUIRED: This script contains high-risk operations. \
-                 Carefully review the identified issues and consider safer alternatives. \
-                 Execute only if you trust the source and understand the implications.".to_string(),
-            ),
-            RiskLevel::Medium => (
-                ExecutionRecommendation::Caution,
-                "REVIEW RECOMMENDED: This script performs operations that access system resources. \
-                 Review the analysis results and ensure you understand what the script will do.".to_string(),
-            ),
-            RiskLevel::Low => (
-                ExecutionRecommendation::Safe,
-                "LOW RISK: This script appears to perform standard operations with minimal security impact. \
-                 Standard precautions apply.".to_string(),
-            ),
-            RiskLevel::Info | RiskLevel::None => (
-                ExecutionRecommendation::Safe,
-                "MINIMAL RISK: No significant security concerns identified. \
-                 This script appears safe to execute.".to_string(),
-            ),
-        }
-    }
 
     fn generate_analysis_summary(
         &self,
         report: &AnalysisReport,
         components: &ScriptComponents,
+        output_language: &OutputLanguage,
     ) -> String {
         let mut summary_parts = Vec::new();
 
         // Script overview
-        summary_parts.push(format!(
-            "Analyzed {} script ({} lines, {} bytes)",
+        summary_parts.push(LocalizedMessages::format_analysis_summary(
             report.script_info.language.as_str(),
             report.script_info.line_count,
-            report.script_info.size_bytes
+            report.script_info.size_bytes,
+            output_language,
         ));
 
         // Static analysis summary
         let critical_nodes = components.get_critical_nodes().len();
         let high_risk_nodes = components.get_high_risk_nodes().len();
 
-        if critical_nodes > 0 || high_risk_nodes > 0 {
-            summary_parts.push(format!(
-                "Static analysis found {} critical and {} high-risk operations",
-                critical_nodes,
-                high_risk_nodes
-            ));
+        if let Some(static_summary) = LocalizedMessages::format_static_analysis_summary(
+            critical_nodes,
+            high_risk_nodes,
+            output_language,
+        ) {
+            summary_parts.push(static_summary);
         }
 
         // LLM analysis summary
         let mut llm_analyses = Vec::new();
         if let Some(ref code_analysis) = report.code_analysis {
-            llm_analyses.push(format!(
-                "Code vulnerability analysis: {} risk (confidence: {:.0}%)",
+            llm_analyses.push(LocalizedMessages::format_code_vulnerability_analysis(
                 code_analysis.risk_level.as_str(),
-                code_analysis.confidence * 100.0
+                code_analysis.confidence,
+                output_language,
             ));
         }
 
         if let Some(ref injection_analysis) = report.injection_analysis {
-            llm_analyses.push(format!(
-                "Injection detection: {} risk (confidence: {:.0}%)",
+            llm_analyses.push(LocalizedMessages::format_injection_detection(
                 injection_analysis.risk_level.as_str(),
-                injection_analysis.confidence * 100.0
+                injection_analysis.confidence,
+                output_language,
             ));
         }
 
@@ -321,9 +291,9 @@ impl AnalysisAggregator {
         }
 
         // Overall assessment
-        summary_parts.push(format!(
-            "Overall risk assessment: {}",
-            report.overall_risk.as_str()
+        summary_parts.push(LocalizedMessages::format_overall_risk_assessment(
+            report.overall_risk.as_str(),
+            output_language,
         ));
 
         summary_parts.join(". ")
@@ -400,7 +370,8 @@ mod tests {
         let mut report = AnalysisReport::new(script_info);
         report.overall_risk = RiskLevel::Critical;
 
-        let (recommendation, advice) = aggregator.generate_execution_guidance(&report, &components);
+        use crate::localization::locale::LocalizedMessages;
+        let (recommendation, advice) = LocalizedMessages::get_execution_guidance(&report.overall_risk, &OutputLanguage::English);
         assert_eq!(recommendation, ExecutionRecommendation::Blocked);
         assert!(advice.contains("BLOCK EXECUTION"));
     }

@@ -1,5 +1,5 @@
 use crate::error::EbiError;
-use crate::models::{AnalysisRequest, AnalysisResult, AnalysisType};
+use crate::models::{AnalysisRequest, AnalysisResult, AnalysisType, OutputLanguage};
 use reqwest;
 use serde::{Deserialize, Serialize};
 use std::future::Future;
@@ -92,7 +92,7 @@ impl OpenAiCompatibleClient {
 
     async fn make_api_request(&self, request: &AnalysisRequest) -> Result<String, EbiError> {
         let prompt = self.build_prompt(request);
-        let api_request = self.build_api_request(prompt);
+        let api_request = self.build_api_request(prompt, &request.analysis_type, &request.output_language);
 
         let mut retries = 0;
         loop {
@@ -189,8 +189,8 @@ impl OpenAiCompatibleClient {
         }
     }
 
-    fn build_api_request(&self, prompt: String) -> LlmApiRequest {
-        build_llm_api_request(&self.config.model_name, prompt)
+    fn build_api_request(&self, prompt: String, analysis_type: &AnalysisType, output_language: &OutputLanguage) -> LlmApiRequest {
+        build_llm_api_request(&self.config.model_name, prompt, analysis_type, output_language)
     }
 }
 
@@ -339,7 +339,7 @@ impl ClaudeClient {
 
     async fn make_api_request(&self, request: &AnalysisRequest) -> Result<String, EbiError> {
         let prompt = self.build_prompt(request);
-        let api_request = self.build_api_request(prompt);
+        let api_request = self.build_api_request(prompt, &request.analysis_type, &request.output_language);
 
         let mut retries = 0;
         loop {
@@ -471,7 +471,10 @@ Provide a risk assessment and explain any suspicious patterns found."#,
         }
     }
 
-    fn build_api_request(&self, prompt: String) -> ClaudeApiRequest {
+    fn build_api_request(&self, prompt: String, analysis_type: &AnalysisType, output_language: &OutputLanguage) -> ClaudeApiRequest {
+        use crate::analyzer::prompts::PromptTemplate;
+        let system_prompt = PromptTemplate::build_system_prompt(analysis_type, output_language);
+
         ClaudeApiRequest {
             model: self.config.model_name.clone(),
             max_tokens: self.config.max_tokens.unwrap_or(CLAUDE_DEFAULT_MAX_TOKENS),
@@ -480,7 +483,7 @@ Provide a risk assessment and explain any suspicious patterns found."#,
                 content: prompt,
             }],
             temperature: self.config.temperature.or(Some(CLAUDE_DEFAULT_TEMPERATURE)),
-            system: Some("You are a security analysis assistant. Analyze the provided script code for security vulnerabilities and provide a detailed assessment.".to_string()),
+            system: Some(system_prompt),
         }
     }
 }
@@ -633,7 +636,7 @@ impl GeminiClient {
 
     async fn make_api_request(&self, request: &AnalysisRequest) -> Result<String, EbiError> {
         let prompt = self.build_prompt(request);
-        let api_request = self.build_api_request(prompt);
+        let api_request = self.build_api_request(prompt, &request.analysis_type, &request.output_language);
 
         let mut retries = 0;
         loop {
@@ -770,10 +773,14 @@ Provide a risk assessment and explain any suspicious patterns found."#,
         }
     }
 
-    fn build_api_request(&self, prompt: String) -> GeminiApiRequest {
+    fn build_api_request(&self, prompt: String, analysis_type: &AnalysisType, output_language: &OutputLanguage) -> GeminiApiRequest {
+        use crate::analyzer::prompts::PromptTemplate;
+        let system_prompt = PromptTemplate::build_system_prompt(analysis_type, output_language);
+        let full_prompt = format!("{}\n\n{}", system_prompt, prompt);
+
         GeminiApiRequest {
             contents: vec![GeminiContent {
-                parts: vec![GeminiPart { text: prompt }],
+                parts: vec![GeminiPart { text: full_prompt }],
             }],
             generation_config: Some(GeminiGenerationConfig {
                 max_output_tokens: self.config.max_tokens,
@@ -921,15 +928,18 @@ pub fn create_llm_client(
     Ok(client)
 }
 
-fn build_llm_api_request(model_name: &str, prompt: String) -> LlmApiRequest {
+fn build_llm_api_request(model_name: &str, prompt: String, analysis_type: &AnalysisType, output_language: &OutputLanguage) -> LlmApiRequest {
+    use crate::analyzer::prompts::PromptTemplate;
+
     let uses_reasoning = uses_reasoning_parameters(model_name);
+    let system_prompt = PromptTemplate::build_system_prompt(analysis_type, output_language);
 
     let mut api_request = LlmApiRequest {
         model: model_name.to_string(),
         messages: vec![
             ChatMessage {
                 role: "system".to_string(),
-                content: "You are a security analysis assistant. Analyze the provided script code for security vulnerabilities and provide a detailed assessment.".to_string(),
+                content: system_prompt,
             },
             ChatMessage {
                 role: "user".to_string(),
@@ -1047,12 +1057,13 @@ mod tests {
 
     #[test]
     fn test_build_api_request_switches_token_parameters() {
-        let request = super::build_llm_api_request("gpt-5-mini", "prompt".to_string());
+        use crate::models::{AnalysisType, OutputLanguage};
+        let request = super::build_llm_api_request("gpt-5-mini", "prompt".to_string(), &AnalysisType::CodeVulnerability, &OutputLanguage::English);
         assert!(request.max_tokens.is_none());
         assert_eq!(request.max_completion_tokens, Some(1000));
         assert!(request.temperature.is_none());
 
-        let classic_request = super::build_llm_api_request("gpt-4o", "prompt".to_string());
+        let classic_request = super::build_llm_api_request("gpt-4o", "prompt".to_string(), &AnalysisType::CodeVulnerability, &OutputLanguage::English);
         assert_eq!(classic_request.max_tokens, Some(1000));
         assert!(classic_request.max_completion_tokens.is_none());
         assert_eq!(classic_request.temperature, Some(0.3));

@@ -1,4 +1,5 @@
-use crate::models::{AnalysisReport, ExecutionDecision, RiskLevel};
+use crate::models::{AnalysisReport, ExecutionDecision, RiskLevel, OutputLanguage};
+use crate::localization::locale::LocalizedMessages;
 use crate::error::EbiError;
 use std::io::{self, Write};
 use std::time::{Duration, Instant};
@@ -6,13 +7,15 @@ use std::time::{Duration, Instant};
 pub struct UserPrompter {
     timeout: Option<Duration>,
     use_colors: bool,
+    output_language: OutputLanguage,
 }
 
 impl UserPrompter {
-    pub fn new(timeout_seconds: Option<u64>, use_colors: bool) -> Self {
+    pub fn new(timeout_seconds: Option<u64>, use_colors: bool, output_language: OutputLanguage) -> Self {
         Self {
             timeout: timeout_seconds.map(Duration::from_secs),
             use_colors,
+            output_language,
         }
     }
 
@@ -47,29 +50,7 @@ impl UserPrompter {
         };
 
         // Display prompt based on risk level
-        let prompt_message = match report.overall_risk {
-            RiskLevel::Critical => {
-                "🚨 CRITICAL RISK DETECTED - Execution automatically blocked for safety."
-            }
-            RiskLevel::High => {
-                "⚠️  HIGH RISK DETECTED\n\
-                 This script performs operations that could be dangerous.\n\
-                 Please review the analysis carefully before proceeding."
-            }
-            RiskLevel::Medium => {
-                "🔸 MEDIUM RISK DETECTED\n\
-                 This script accesses system resources.\n\
-                 Please review the analysis before proceeding."
-            }
-            RiskLevel::Low | RiskLevel::None => {
-                "✅ LOW RISK DETECTED\n\
-                 This script appears relatively safe."
-            }
-            RiskLevel::Info => {
-                "ℹ️  ANALYSIS COMPLETE\n\
-                 No significant security concerns identified."
-            }
-        };
+        let prompt_message = LocalizedMessages::get_prompt_message(&report.overall_risk, &self.output_language);
 
         print!("\n{}{}{}\n\n", color_start, prompt_message, color_end);
 
@@ -88,7 +69,7 @@ impl UserPrompter {
         println!();
 
         // Show the actual prompt
-        let prompt_text = self.get_prompt_text(&report.overall_risk);
+        let prompt_text = LocalizedMessages::get_prompt_text(&report.overall_risk, &self.output_language);
         print!("{}", prompt_text);
 
         // Flush to ensure prompt is displayed
@@ -98,26 +79,6 @@ impl UserPrompter {
         Ok(())
     }
 
-    fn get_prompt_text(&self, risk_level: &RiskLevel) -> String {
-        match risk_level {
-            RiskLevel::Critical => {
-                "⚠️  Execution is blocked due to CRITICAL risk.\n\
-                 (This prompt should not be shown under normal operation.)"
-            }
-            RiskLevel::High => {
-                "⚠️  Do you want to proceed with execution despite the HIGH RISK? \n\
-                 Type 'yes' to execute anyway, 'no' to cancel, or 'review' to see full details: "
-            }
-            RiskLevel::Medium => {
-                "🔸 Do you want to proceed with execution? \n\
-                 Type 'yes' to execute, 'no' to cancel, or 'review' to see full details: "
-            }
-            RiskLevel::Low | RiskLevel::Info | RiskLevel::None => {
-                "Type 'yes' to execute, 'no' to cancel: "
-            }
-        }
-        .to_string()
-    }
 
     fn get_user_input(&self) -> Result<String, EbiError> {
         if let Some(timeout_duration) = self.timeout {
@@ -320,9 +281,11 @@ impl UserPrompter {
 
 // Convenience functions for common prompting scenarios
 impl UserPrompter {
-    pub fn for_cli(cli: &crate::cli::args::Cli) -> Self {
+    pub fn for_cli(cli: &crate::cli::args::Cli) -> Result<Self, EbiError> {
+        let output_language = cli.get_output_language()?;
+
         if cli.is_debug() {
-            return Self::new(None, cli.should_use_color());
+            return Ok(Self::new(None, cli.should_use_color(), output_language));
         }
 
         let env_timeout = std::env::var("EBI_PROMPT_TIMEOUT")
@@ -333,15 +296,15 @@ impl UserPrompter {
         let prompt_timeout = env_timeout
             .unwrap_or_else(|| cli.get_timeout_seconds().min(300));
 
-        Self::new(Some(prompt_timeout), cli.should_use_color())
+        Ok(Self::new(Some(prompt_timeout), cli.should_use_color(), output_language))
     }
 
     pub fn for_testing() -> Self {
-        Self::new(Some(1), false) // Very short timeout, no colors for tests
+        Self::new(Some(1), false, OutputLanguage::English) // Very short timeout, no colors for tests
     }
 
     pub fn without_timeout() -> Self {
-        Self::new(None, true)
+        Self::new(None, true, OutputLanguage::English)
     }
 }
 
@@ -402,7 +365,7 @@ mod tests {
     #[test]
     fn test_prompter_creation() {
         let cli = crate::cli::args::Cli::try_parse_from(vec!["ebi", "--debug", "bash"]).unwrap();
-        let prompter = UserPrompter::for_cli(&cli);
+        let prompter = UserPrompter::for_cli(&cli).unwrap();
 
         // Debug mode should have no timeout
         assert!(prompter.timeout.is_none());

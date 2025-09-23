@@ -77,7 +77,7 @@ impl CliHandler {
         }
 
         // Step 7: Get user decision using integrated prompter
-        let prompter = UserPrompter::for_cli(&self.cli);
+        let prompter = UserPrompter::for_cli(&self.cli)?;
         let decision = match prompter.prompt_execution_decision(&analysis_report) {
             Ok(decision) => decision,
             Err(EbiError::UserInputTimeout) => {
@@ -157,6 +157,7 @@ impl CliHandler {
             analysis_results,
             script_info,
             components,
+            &output_language,
         )?;
 
         if self.cli.is_verbose() {

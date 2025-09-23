@@ -114,19 +114,19 @@
 
 - [x] T032 Integrate all modules in main.rs with proper error handling and flow control
 
-- [ ] T033 Implement timeout handling for LLM requests and user prompts
+- [x] T033 Implement timeout handling for LLM requests and user prompts
 
 ## Phase 3.5: Polish
 
-- [ ] T034 [P] Add comprehensive unit tests for language detection in `tests/unit/test_language_detection.rs`
+- [x] T034 [P] Add comprehensive unit tests for language detection in `tests/unit/test_language_detection.rs`
 
-- [ ] T035 [P] Add unit tests for AST parsing edge cases in `tests/unit/test_ast_parsing.rs`
+- [x] T035 [P] Add unit tests for AST parsing edge cases in `tests/unit/test_ast_parsing.rs`
 
-- [ ] T036 [P] Add unit tests for analysis aggregation logic in `tests/unit/test_analysis_aggregation.rs`
+- [x] T036 [P] Add unit tests for analysis aggregation logic in `tests/unit/test_analysis_aggregation.rs`
 
-- [ ] T037 [P] Add unit tests for error handling scenarios in `tests/unit/test_error_handling.rs`
+- [x] T037 [P] Add unit tests for error handling scenarios in `tests/unit/test_error_handling.rs`
 
-- [ ] T038 Run quickstart.md manual testing scenarios and fix any issues
+- [x] T038 Run quickstart.md manual testing scenarios and fix any issues
 
 ## Dependencies
 

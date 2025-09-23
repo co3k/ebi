@@ -1,4 +1,4 @@
-use crate::models::{AnalysisReport, RiskLevel, OutputLanguage};
+use crate::models::{AnalysisReport, RiskLevel};
 use crate::cli::args::Cli;
 use crate::localization::LocalizedStrings;
 

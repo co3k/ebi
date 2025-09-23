@@ -1,5 +1,4 @@
 use crate::models::OutputLanguage;
-use crate::error::EbiError;
 use std::env;
 
 pub struct LocaleDetector;

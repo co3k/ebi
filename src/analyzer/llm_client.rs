@@ -7,6 +7,10 @@ use std::pin::Pin;
 use std::time::Duration;
 use tokio::time::timeout;
 
+// Constants for Claude API configuration
+const CLAUDE_DEFAULT_MAX_TOKENS: u32 = 1000;
+const CLAUDE_DEFAULT_TEMPERATURE: f32 = 0.3;
+
 #[derive(Debug, Clone)]
 pub struct LlmConfig {
     pub model_name: String,
@@ -14,6 +18,8 @@ pub struct LlmConfig {
     pub api_key: Option<String>,
     pub timeout_seconds: u64,
     pub max_retries: u32,
+    pub max_tokens: Option<u32>,
+    pub temperature: Option<f32>,
 }
 
 #[derive(Debug, Serialize)]
@@ -508,12 +514,12 @@ Provide a risk assessment and explain any suspicious patterns found."#,
     fn build_api_request(&self, prompt: String) -> ClaudeApiRequest {
         ClaudeApiRequest {
             model: self.config.model_name.clone(),
-            max_tokens: 1000,
+            max_tokens: self.config.max_tokens.unwrap_or(CLAUDE_DEFAULT_MAX_TOKENS),
             messages: vec![ClaudeMessage {
                 role: "user".to_string(),
                 content: prompt,
             }],
-            temperature: Some(0.3),
+            temperature: self.config.temperature.or(Some(CLAUDE_DEFAULT_TEMPERATURE)),
             system: Some("You are a security analysis assistant. Analyze the provided script code for security vulnerabilities and provide a detailed assessment.".to_string()),
         }
     }
@@ -643,6 +649,8 @@ pub fn create_llm_client(
         api_key,
         timeout_seconds,
         max_retries: 3,
+        max_tokens: None,
+        temperature: None,
     };
 
     let client: Box<dyn LlmProvider + Send + Sync> = if is_claude_model(&config.model_name) {
@@ -695,17 +703,7 @@ fn is_openai_model(model: &str) -> bool {
 
 fn is_claude_model(model: &str) -> bool {
     let candidate = model.strip_prefix("anthropic/").unwrap_or(model);
-    
     candidate.starts_with("claude-")
-        || candidate.starts_with("claude-3-")
-        || candidate.starts_with("claude-3.5-")
-        || candidate.starts_with("claude-3.5-sonnet")
-        || candidate.starts_with("claude-3.5-haiku")
-        || candidate.starts_with("claude-3-opus")
-        || candidate.starts_with("claude-3-sonnet")
-        || candidate.starts_with("claude-3-haiku")
-        || candidate.starts_with("claude-2")
-        || candidate.starts_with("claude-instant")
 }
 
 fn uses_reasoning_parameters(model: &str) -> bool {

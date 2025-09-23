@@ -1,0 +1,5 @@
+msrv = "1.75"
+warn-on-all-wildcard-imports = true
+disallowed-methods = [
+    "std::env::var",  # Use std::env::var_os instead for better error handling
+]

@@ -29,50 +29,50 @@
 
 ## Phase 3.1: Setup
 
-- [ ] T001 Create Rust project structure with `cargo init` and organize directories: `src/`, `src/cli/`, `src/parser/`, `src/analyzer/`, `src/executor/`, `tests/unit/`, `tests/integration/`, `tests/contract/`
+- [x] T001 Create Rust project structure with `cargo init` and organize directories: `src/`, `src/cli/`, `src/parser/`, `src/analyzer/`, `src/executor/`, `tests/unit/`, `tests/integration/`, `tests/contract/`
 
-- [ ] T002 Initialize Cargo.toml with dependencies: clap ~4.0, tokio ~1.0, tree-sitter ~0.20, llm-chain ~0.9, serde ~1.0, thiserror ~1.0, shebang-rs ~0.2, and dev dependencies mockito, insta
+- [x] T002 Initialize Cargo.toml with dependencies: clap ~4.0, tokio ~1.0, tree-sitter ~0.20, llm-chain ~0.9, serde ~1.0, thiserror ~1.0, shebang-rs ~0.2, and dev dependencies mockito, insta
 
-- [ ] T003 [P] Configure clippy, rustfmt, and create build.rs for Tree-sitter grammar compilation
+- [x] T003 [P] Configure clippy, rustfmt, and create build.rs for Tree-sitter grammar compilation
 
-- [ ] T004 [P] Create .gitignore with Rust target/, Cargo.lock (for binaries), and environment files
+- [x] T004 [P] Create .gitignore with Rust target/, Cargo.lock (for binaries), and environment files
 
 ## Phase 3.2: Tests First (TDD) ⚠️ MUST COMPLETE BEFORE 3.3
 **CRITICAL: These tests MUST be written and MUST FAIL before ANY implementation**
 
-- [ ] T005 [P] Contract test for LLM analysis API request/response in `tests/contract/test_llm_api.rs`
+- [x] T005 [P] Contract test for LLM analysis API request/response in `tests/contract/test_llm_api.rs`
 
-- [ ] T006 [P] Contract test for CLI argument parsing in `tests/contract/test_cli_interface.rs`
+- [x] T006 [P] Contract test for CLI argument parsing in `tests/contract/test_cli_interface.rs`
 
-- [ ] T007 [P] Integration test for "analyze simple script" scenario in `tests/integration/test_simple_analysis.rs`
+- [x] T007 [P] Integration test for "analyze simple script" scenario in `tests/integration/test_simple_analysis.rs`
 
-- [ ] T008 [P] Integration test for "analyze installation script" scenario in `tests/integration/test_installation_script.rs`
+- [x] T008 [P] Integration test for "analyze installation script" scenario in `tests/integration/test_installation_script.rs`
 
-- [ ] T009 [P] Integration test for "user declines execution" scenario in `tests/integration/test_user_decline.rs`
+- [x] T009 [P] Integration test for "user declines execution" scenario in `tests/integration/test_user_decline.rs`
 
-- [ ] T010 [P] Integration test for "LLM service unavailable" scenario in `tests/integration/test_llm_failure.rs`
+- [x] T010 [P] Integration test for "LLM service unavailable" scenario in `tests/integration/test_llm_failure.rs`
 
-- [ ] T011 [P] Integration test for "language detection" scenarios in `tests/integration/test_language_detection.rs`
+- [x] T011 [P] Integration test for "language detection" scenarios in `tests/integration/test_language_detection.rs`
 
 ## Phase 3.3: Core Implementation (ONLY after tests are failing)
 
 ### Error Types and Core Structures
 
-- [ ] T012 [P] Define EbiError enum with all error variants in `src/error.rs`
+- [x] T012 [P] Define EbiError enum with all error variants in `src/error.rs`
 
-- [ ] T013 [P] Implement Script entity with language detection in `src/models/script.rs`
+- [x] T013 [P] Implement Script entity with language detection in `src/models/script.rs`
 
-- [ ] T014 [P] Implement ScriptComponents and ParseMetadata structs in `src/models/components.rs`
+- [x] T014 [P] Implement ScriptComponents and ParseMetadata structs in `src/models/components.rs`
 
-- [ ] T015 [P] Implement AnalysisRequest and AnalysisResult structs in `src/models/analysis.rs`
+- [x] T015 [P] Implement AnalysisRequest and AnalysisResult structs in `src/models/analysis.rs`
 
-- [ ] T016 [P] Implement AnalysisReport and ExecutionDecision structs in `src/models/report.rs`
+- [x] T016 [P] Implement AnalysisReport and ExecutionDecision structs in `src/models/report.rs`
 
 ### CLI Parsing
 
-- [ ] T017 Implement CLI argument parsing with clap derive in `src/cli/args.rs`
+- [x] T017 Implement CLI argument parsing with clap derive in `src/cli/args.rs`
 
-- [ ] T018 Implement main CLI entry point and command dispatcher in `src/cli/mod.rs`
+- [x] T018 Implement main CLI entry point and command dispatcher in `src/cli/mod.rs`
 
 ### Language Detection
 

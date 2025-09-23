@@ -1,10 +1,10 @@
-use crate::models::{AnalysisRequest, AnalysisResult, AnalysisType};
 use crate::error::EbiError;
+use crate::models::{AnalysisRequest, AnalysisResult, AnalysisType};
 use reqwest;
 use serde::{Deserialize, Serialize};
-use std::time::Duration;
 use std::future::Future;
 use std::pin::Pin;
+use std::time::Duration;
 use tokio::time::timeout;
 
 #[derive(Debug, Clone)]
@@ -20,7 +20,11 @@ pub struct LlmConfig {
 struct LlmApiRequest {
     model: String,
     messages: Vec<ChatMessage>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     max_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_completion_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     temperature: Option<f32>,
 }
 
@@ -73,43 +77,32 @@ impl OpenAiCompatibleClient {
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(config.timeout_seconds))
             .build()
-            .map_err(|e| EbiError::LlmClientError(format!("Failed to create HTTP client: {}", e)))?;
+            .map_err(|e| {
+                EbiError::LlmClientError(format!("Failed to create HTTP client: {}", e))
+            })?;
 
         Ok(Self { config, client })
     }
 
     async fn make_api_request(&self, request: &AnalysisRequest) -> Result<String, EbiError> {
         let prompt = self.build_prompt(request);
-
-        let api_request = LlmApiRequest {
-            model: self.config.model_name.clone(),
-            messages: vec![
-                ChatMessage {
-                    role: "system".to_string(),
-                    content: "You are a security analysis assistant. Analyze the provided script code for security vulnerabilities and provide a detailed assessment.".to_string(),
-                },
-                ChatMessage {
-                    role: "user".to_string(),
-                    content: prompt,
-                },
-            ],
-            max_tokens: Some(1000),
-            temperature: Some(0.3), // Lower temperature for more consistent security analysis
-        };
+        let api_request = self.build_api_request(prompt);
 
         let mut retries = 0;
         loop {
             let timeout_secs = request.timeout_seconds.min(self.config.timeout_seconds);
             let timeout_duration = Duration::from_secs(timeout_secs);
 
-            let mut http_request = self.client
+            let mut http_request = self
+                .client
                 .post(&self.config.api_endpoint)
                 .header("Content-Type", "application/json")
                 .json(&api_request);
 
             if let Some(ref api_key) = self.config.api_key {
                 if !api_key.is_empty() {
-                    http_request = http_request.header("Authorization", format!("Bearer {}", api_key));
+                    http_request =
+                        http_request.header("Authorization", format!("Bearer {}", api_key));
                 }
             }
 
@@ -118,27 +111,36 @@ impl OpenAiCompatibleClient {
             match response {
                 Ok(Ok(resp)) => {
                     if resp.status().is_success() {
-                        let api_response: LlmApiResponse = resp.json().await
-                            .map_err(|e| EbiError::LlmClientError(format!("Failed to parse response: {}", e)))?;
+                        let api_response: LlmApiResponse = resp.json().await.map_err(|e| {
+                            EbiError::LlmClientError(format!("Failed to parse response: {}", e))
+                        })?;
 
                         if let Some(choice) = api_response.choices.first() {
                             return Ok(choice.message.content.clone());
                         } else {
-                            return Err(EbiError::LlmClientError("No response choices received".to_string()));
+                            return Err(EbiError::LlmClientError(
+                                "No response choices received".to_string(),
+                            ));
                         }
                     } else {
                         let status = resp.status();
-                        let error_text = resp.text().await.unwrap_or_else(|_| "Unknown error".to_string());
+                        let error_text = resp
+                            .text()
+                            .await
+                            .unwrap_or_else(|_| "Unknown error".to_string());
 
-                        if retries < self.config.max_retries && (status.is_server_error() || status == 429) {
+                        if retries < self.config.max_retries
+                            && (status.is_server_error() || status == 429)
+                        {
                             retries += 1;
                             tokio::time::sleep(Duration::from_millis(1000 * retries as u64)).await;
                             continue;
                         }
 
-                        return Err(EbiError::LlmClientError(
-                            format!("API request failed with status {}: {}", status, error_text)
-                        ));
+                        return Err(EbiError::LlmClientError(format!(
+                            "API request failed with status {}: {}",
+                            status, error_text
+                        )));
                     }
                 }
                 Ok(Err(e)) => {
@@ -151,7 +153,7 @@ impl OpenAiCompatibleClient {
                 }
                 Err(_) => {
                     return Err(EbiError::AnalysisTimeout {
-                        timeout: timeout_secs
+                        timeout: timeout_secs,
                     });
                 }
             }
@@ -220,6 +222,10 @@ Provide a risk assessment and explain any suspicious patterns found."#,
             }
         }
     }
+
+    fn build_api_request(&self, prompt: String) -> LlmApiRequest {
+        build_llm_api_request(&self.config.model_name, prompt)
+    }
 }
 
 impl LlmProvider for OpenAiCompatibleClient {
@@ -235,7 +241,8 @@ impl LlmProvider for OpenAiCompatibleClient {
             let duration_ms = start_time.elapsed().as_millis() as u64;
 
             // Parse the response to extract risk level and summary
-            let (risk_level, summary, confidence) = Self::parse_analysis_response(&response_content);
+            let (risk_level, summary, confidence) =
+                Self::parse_analysis_response(&response_content);
 
             let result = AnalysisResult::new(
                 request.analysis_type.clone(),
@@ -290,10 +297,11 @@ impl OpenAiCompatibleClient {
             .collect::<String>();
 
         // Calculate confidence based on response quality
-        let confidence = if response.len() > 100 &&
-                          (response_lower.contains("vulnerability") ||
-                           response_lower.contains("risk") ||
-                           response_lower.contains("security")) {
+        let confidence = if response.len() > 100
+            && (response_lower.contains("vulnerability")
+                || response_lower.contains("risk")
+                || response_lower.contains("security"))
+        {
             0.85
         } else if response.len() > 50 {
             0.70
@@ -306,23 +314,36 @@ impl OpenAiCompatibleClient {
 }
 
 // Factory function to create LLM clients
-pub fn create_llm_client(model: &str, api_key: Option<String>, timeout_seconds: u64) -> Result<Box<dyn LlmProvider + Send + Sync>, EbiError> {
+pub fn create_llm_client(
+    model: &str,
+    api_key: Option<String>,
+    timeout_seconds: u64,
+) -> Result<Box<dyn LlmProvider + Send + Sync>, EbiError> {
     // Determine API endpoint based on model
     let endpoint_override = std::env::var("EBI_LLM_API_ENDPOINT").ok();
+    let trimmed_model = model.trim();
 
     let (api_endpoint, actual_model) = if let Some(endpoint) = endpoint_override {
-        (endpoint, model.to_string())
-    } else if model.starts_with("gpt-") {
-        ("https://api.openai.com/v1/chat/completions".to_string(), model.to_string())
-    } else if model.starts_with("claude-") {
+        (endpoint, trimmed_model.to_string())
+    } else if is_openai_model(trimmed_model) {
+        (
+            "https://api.openai.com/v1/chat/completions".to_string(),
+            trimmed_model.to_string(),
+        )
+    } else if trimmed_model.starts_with("claude-") {
         // For Claude, we'd need to use Anthropic's API format (not OpenAI compatible)
-        return Err(EbiError::LlmClientError("Claude models not yet supported - use OpenAI-compatible models".to_string()));
-    } else if model.starts_with("gemini-") {
+        return Err(EbiError::LlmClientError(
+            "Claude models not yet supported - use OpenAI-compatible models".to_string(),
+        ));
+    } else if trimmed_model.starts_with("gemini-") {
         // For Gemini, we'd need to use Google's API format
-        return Err(EbiError::LlmClientError("Gemini models not yet supported - use OpenAI-compatible models".to_string()));
+        return Err(EbiError::LlmClientError(
+            "Gemini models not yet supported - use OpenAI-compatible models".to_string(),
+        ));
     } else {
-        // Default to OpenAI-compatible endpoint (for local models, etc.)
-        ("http://localhost:11434/v1/chat/completions".to_string(), model.to_string())
+        return Err(EbiError::LlmClientError(format!(
+            "Unsupported model '{trimmed_model}'. Specify a supported model or set EBI_LLM_API_ENDPOINT for custom integrations",
+        )));
     };
 
     let config = LlmConfig {
@@ -335,6 +356,57 @@ pub fn create_llm_client(model: &str, api_key: Option<String>, timeout_seconds: 
 
     let client = OpenAiCompatibleClient::new(config)?;
     Ok(Box::new(client))
+}
+
+fn build_llm_api_request(model_name: &str, prompt: String) -> LlmApiRequest {
+    let uses_reasoning = uses_reasoning_parameters(model_name);
+
+    let mut api_request = LlmApiRequest {
+        model: model_name.to_string(),
+        messages: vec![
+            ChatMessage {
+                role: "system".to_string(),
+                content: "You are a security analysis assistant. Analyze the provided script code for security vulnerabilities and provide a detailed assessment.".to_string(),
+            },
+            ChatMessage {
+                role: "user".to_string(),
+                content: prompt,
+            },
+        ],
+        max_tokens: None,
+        max_completion_tokens: None,
+        temperature: if uses_reasoning { None } else { Some(0.3) },
+    };
+
+    if uses_reasoning {
+        api_request.max_completion_tokens = Some(1000);
+    } else {
+        api_request.max_tokens = Some(1000);
+    }
+
+    api_request
+}
+
+fn is_openai_model(model: &str) -> bool {
+    let candidate = model.strip_prefix("openai/").unwrap_or(model);
+    let candidate = candidate.strip_prefix("ft:").unwrap_or(candidate);
+
+    candidate.starts_with("gpt-")
+        || candidate.starts_with("chatgpt-")
+        || candidate.starts_with("o1")
+        || candidate.starts_with("o3")
+        || candidate.starts_with("o4")
+}
+
+fn uses_reasoning_parameters(model: &str) -> bool {
+    let candidate = model.strip_prefix("openai/").unwrap_or(model);
+    let candidate = candidate.strip_prefix("ft:").unwrap_or(candidate);
+
+    candidate.starts_with("o1")
+        || candidate.starts_with("o3")
+        || candidate.starts_with("o4")
+        || candidate.starts_with("gpt-5")
+        || candidate.starts_with("gpt-4.1")
 }
 
 #[cfg(test)]
@@ -357,7 +429,8 @@ mod tests {
     #[test]
     fn test_response_parsing() {
         let response = "Risk Level: HIGH\nThis script contains potential vulnerabilities including command injection.";
-        let (risk_level, summary, confidence) = OpenAiCompatibleClient::parse_analysis_response(response);
+        let (risk_level, summary, confidence) =
+            OpenAiCompatibleClient::parse_analysis_response(response);
 
         assert_eq!(risk_level, crate::models::RiskLevel::High);
         assert!(summary.contains("vulnerabilities"));
@@ -365,8 +438,48 @@ mod tests {
     }
 
     #[test]
-    fn test_client_creation() {
-        let client = create_llm_client("unsupported-model", Some("test-key".to_string()), 60);
-        assert!(client.is_err());
+    fn test_client_creation_rejects_unknown_model() {
+        let err = match create_llm_client("unsupported-model", Some("test-key".to_string()), 60) {
+            Ok(_) => panic!("unexpected success for unsupported model"),
+            Err(err) => err,
+        };
+
+        match err {
+            EbiError::LlmClientError(message) => {
+                assert!(message.contains("unsupported-model"));
+            }
+            other => panic!("unexpected error type: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_o_series_models_supported_by_detection() {
+        assert!(super::is_openai_model("o1-mini"));
+        assert!(super::is_openai_model("o3-preview"));
+        assert!(super::is_openai_model("o4-mini"));
+        assert!(super::is_openai_model("gpt-5-mini"));
+
+        assert!(super::uses_reasoning_parameters("o1-mini"));
+        assert!(super::uses_reasoning_parameters("o3-preview"));
+        assert!(super::uses_reasoning_parameters("o4-mini"));
+        assert!(super::uses_reasoning_parameters("gpt-5-mini"));
+        assert!(super::uses_reasoning_parameters("gpt-4.1"));
+
+        assert!(!super::uses_reasoning_parameters("gpt-4o"));
+        assert!(!super::uses_reasoning_parameters("gpt-4o-mini"));
+        assert!(!super::uses_reasoning_parameters("gpt-3.5-turbo"));
+    }
+
+    #[test]
+    fn test_build_api_request_switches_token_parameters() {
+        let request = super::build_llm_api_request("gpt-5-mini", "prompt".to_string());
+        assert!(request.max_tokens.is_none());
+        assert_eq!(request.max_completion_tokens, Some(1000));
+        assert!(request.temperature.is_none());
+
+        let classic_request = super::build_llm_api_request("gpt-4o", "prompt".to_string());
+        assert_eq!(classic_request.max_tokens, Some(1000));
+        assert!(classic_request.max_completion_tokens.is_none());
+        assert_eq!(classic_request.temperature, Some(0.3));
     }
 }

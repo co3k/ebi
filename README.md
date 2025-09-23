@@ -20,7 +20,7 @@ EBI is a security tool that analyzes scripts before execution using LLM-powered 
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/ebi.git
+git clone https://github.com/co3k/ebi.git
 cd ebi
 
 # Build with Cargo
@@ -148,7 +148,7 @@ cat large_script.py | ebi --timeout 120 python
 
 ```bash
 # Clone repository
-git clone https://github.com/yourusername/ebi.git
+git clone https://github.com/co3k/ebi.git
 cd ebi
 
 # Run tests

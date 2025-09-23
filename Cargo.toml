@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 description = "Evaluate Before Invocation - Script analysis tool using LLMs"
 license = "MIT"
-repository = "https://github.com/yourusername/ebi"
+repository = "https://github.com/co3k/ebi"
 
 [dependencies]
 clap = { version = "4.0", features = ["derive"] }

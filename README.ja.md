@@ -20,7 +20,7 @@ EBIは、LLMを活用してスクリプトを実行前に分析するセキュ�
 
 ```bash
 # リポジトリをクローン
-git clone https://github.com/yourusername/ebi.git
+git clone https://github.com/co3k/ebi.git
 cd ebi
 
 # Cargoでビルド
@@ -148,7 +148,7 @@ cat large_script.py | ebi --timeout 120 python
 
 ```bash
 # リポジトリをクローン
-git clone https://github.com/yourusername/ebi.git
+git clone https://github.com/co3k/ebi.git
 cd ebi
 
 # テストを実行

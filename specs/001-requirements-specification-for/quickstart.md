@@ -8,7 +8,7 @@ EBI (Evaluate Before Invocation) is a security tool that analyzes scripts before
 
 ### From Source (Rust required)
 ```bash
-git clone https://github.com/yourusername/ebi
+git clone https://github.com/co3k/ebi
 cd ebi
 cargo build --release
 sudo cp target/release/ebi /usr/local/bin/

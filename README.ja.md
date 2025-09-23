@@ -60,6 +60,38 @@ export EBI_DEFAULT_MODEL="gemini-2.5-flash"
 export EBI_DEFAULT_TIMEOUT=120
 ```
 
+### 言語設定
+
+EBIは自動ロケール検出による複数出力言語をサポートしています：
+
+```bash
+# システムロケールからの自動言語検出
+echo 'echo "Hello"' | ebi bash
+
+# 明示的な言語選択
+echo 'echo "Hello"' | ebi --output-lang japanese bash
+
+# 環境変数による上書き
+export EBI_OUTPUT_LANGUAGE=japanese
+echo 'echo "Hello"' | ebi bash
+```
+
+**言語優先順位（高から低へ）:**
+1. `EBI_OUTPUT_LANGUAGE` 環境変数
+2. `--output-lang` CLIオプション
+3. システムロケール検出（`LC_ALL`, `LC_MESSAGES`, `LANG`, `LANGUAGE`）
+4. デフォルト: 英語
+
+**サポート言語:**
+- `english` (または `en`) - 英語出力
+- `japanese` (または `ja`, `jp`) - 日本語出力
+
+**ロケール検出:**
+EBIはシステムロケールを自動検出し、適切な言語を使用します：
+- 日本語ロケール（`ja_JP.UTF-8`, `ja`など）→ 日本語出力
+- 英語ロケール（`en_US.UTF-8`, `en`, `C.UTF-8`など）→ 英語出力
+- 不明なロケール → 英語出力（フォールバック）
+
 ## 使用方法
 
 ### 基本的な使用方法

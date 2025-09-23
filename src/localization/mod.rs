@@ -1,6 +1,9 @@
 use crate::models::OutputLanguage;
 
 pub mod strings;
+pub mod locale;
+
+pub use locale::LocaleDetector;
 
 pub struct LocalizedStrings {
     pub output_language: OutputLanguage,

@@ -60,6 +60,38 @@ export EBI_DEFAULT_MODEL="gemini-2.5-flash"
 export EBI_DEFAULT_TIMEOUT=120
 ```
 
+### Language Configuration
+
+EBI supports multiple output languages with automatic locale detection:
+
+```bash
+# Automatic language detection from system locale
+echo 'echo "Hello"' | ebi bash
+
+# Explicit language selection
+echo 'echo "Hello"' | ebi --output-lang japanese bash
+
+# Environment variable override
+export EBI_OUTPUT_LANGUAGE=japanese
+echo 'echo "Hello"' | ebi bash
+```
+
+**Language Priority (highest to lowest):**
+1. `EBI_OUTPUT_LANGUAGE` environment variable
+2. `--output-lang` CLI option
+3. System locale detection (`LC_ALL`, `LC_MESSAGES`, `LANG`, `LANGUAGE`)
+4. Default: English
+
+**Supported Languages:**
+- `english` (or `en`) - English output
+- `japanese` (or `ja`, `jp`) - Japanese output
+
+**Locale Detection:**
+EBI automatically detects your system locale and uses the appropriate language:
+- Japanese locales (`ja_JP.UTF-8`, `ja`, etc.) → Japanese output
+- English locales (`en_US.UTF-8`, `en`, `C.UTF-8`, etc.) → English output
+- Unknown locales → English output (fallback)
+
 ## Usage
 
 ### Basic Usage

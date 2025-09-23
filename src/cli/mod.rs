@@ -44,6 +44,11 @@ impl CliHandler {
             eprintln!("🔍 Detected language: {}", script.language.as_str());
         }
 
+        if self.cli.is_debug() {
+            eprintln!("🌐 Language detection:");
+            eprintln!("{}", self.cli.get_language_debug_info());
+        }
+
         // Step 3: Parse script components using integrated parser
         let components = self.parse_script_components(&script).await?;
 

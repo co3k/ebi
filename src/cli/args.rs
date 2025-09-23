@@ -1,6 +1,7 @@
 use clap::Parser;
 use crate::error::EbiError;
 use crate::models::OutputLanguage;
+use crate::localization::LocaleDetector;
 
 #[derive(Parser, Debug)]
 #[command(name = "ebi")]
@@ -29,6 +30,7 @@ pub struct Cli {
     pub debug: bool,
 
     /// Output language for analysis reports (english, japanese)
+    /// If not specified, automatically detects from system locale
     #[arg(long, default_value = "english")]
     pub output_lang: String,
 
@@ -121,13 +123,46 @@ impl Cli {
     }
 
     pub fn get_output_language(&self) -> Result<OutputLanguage, EbiError> {
-        // Check environment variable override first
+        // Priority 1: Environment variable override
         if let Ok(env_lang) = std::env::var("EBI_OUTPUT_LANGUAGE") {
             return OutputLanguage::from_str(&env_lang);
         }
         
-        // Fall back to CLI option
-        OutputLanguage::from_str(&self.output_lang)
+        // Priority 2: CLI option (if not default)
+        if self.output_lang != "english" {
+            return OutputLanguage::from_str(&self.output_lang);
+        }
+        
+        // Priority 3: System locale detection
+        let detected_locale = LocaleDetector::detect_system_locale();
+        
+        // Priority 4: Fall back to CLI default (english)
+        Ok(detected_locale)
+    }
+
+    /// Get debug information about language detection
+    pub fn get_language_debug_info(&self) -> String {
+        let mut info = Vec::new();
+        
+        // Show environment variable status
+        match std::env::var("EBI_OUTPUT_LANGUAGE") {
+            Ok(value) => info.push(format!("EBI_OUTPUT_LANGUAGE={}", value)),
+            Err(_) => info.push("EBI_OUTPUT_LANGUAGE=(not set)".to_string()),
+        }
+        
+        // Show CLI option
+        info.push(format!("CLI --output-lang={}", self.output_lang));
+        
+        // Show system locale info
+        info.push(format!("System locale: {}", LocaleDetector::get_system_locale_info()));
+        
+        // Show detected language
+        match self.get_output_language() {
+            Ok(lang) => info.push(format!("Detected language: {}", lang.as_str())),
+            Err(e) => info.push(format!("Language detection error: {}", e)),
+        }
+        
+        info.join("\n")
     }
 }
 
@@ -297,5 +332,45 @@ mod tests {
         
         // Clean up
         std::env::remove_var("EBI_OUTPUT_LANGUAGE");
+    }
+
+    #[test]
+    fn test_locale_detection_priority() {
+        // Test that locale detection works when no explicit language is set
+        std::env::set_var("LANG", "ja_JP.UTF-8");
+        
+        let args = vec!["ebi", "bash"]; // No --output-lang specified
+        let cli = Cli::try_parse_from(args).unwrap();
+        
+        assert_eq!(cli.get_output_language().unwrap(), OutputLanguage::Japanese);
+        
+        // Clean up
+        std::env::remove_var("LANG");
+    }
+
+    #[test]
+    fn test_locale_detection_with_explicit_option() {
+        // Test that explicit CLI option overrides locale detection
+        std::env::set_var("LANG", "ja_JP.UTF-8");
+        
+        let args = vec!["ebi", "--output-lang", "english", "bash"];
+        let cli = Cli::try_parse_from(args).unwrap();
+        
+        assert_eq!(cli.get_output_language().unwrap(), OutputLanguage::English);
+        
+        // Clean up
+        std::env::remove_var("LANG");
+    }
+
+    #[test]
+    fn test_language_debug_info() {
+        let args = vec!["ebi", "bash"];
+        let cli = Cli::try_parse_from(args).unwrap();
+        
+        let debug_info = cli.get_language_debug_info();
+        assert!(debug_info.contains("EBI_OUTPUT_LANGUAGE="));
+        assert!(debug_info.contains("CLI --output-lang="));
+        assert!(debug_info.contains("System locale:"));
+        assert!(debug_info.contains("Detected language:"));
     }
 }

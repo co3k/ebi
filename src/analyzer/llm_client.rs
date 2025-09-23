@@ -740,12 +740,8 @@ fn is_openai_model(model: &str) -> bool {
 
 fn is_gemini_model(model: &str) -> bool {
     let candidate = model.strip_prefix("gemini/").unwrap_or(model);
-    
+
     candidate.starts_with("gemini-")
-        || candidate.starts_with("gemini-pro")
-        || candidate.starts_with("gemini-pro-vision")
-        || candidate.starts_with("gemini-1.5")
-        || candidate.starts_with("gemini-2.0")
 }
 
 fn uses_reasoning_parameters(model: &str) -> bool {

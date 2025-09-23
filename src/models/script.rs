@@ -23,6 +23,36 @@ pub enum Language {
     Unknown,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum OutputLanguage {
+    English,
+    Japanese,
+}
+
+impl OutputLanguage {
+    pub fn from_str(s: &str) -> Result<Self, EbiError> {
+        match s.to_lowercase().as_str() {
+            "english" | "en" => Ok(OutputLanguage::English),
+            "japanese" | "ja" | "jp" => Ok(OutputLanguage::Japanese),
+            _ => Err(EbiError::InvalidArguments(format!("Unsupported output language: {}", s))),
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            OutputLanguage::English => "english",
+            OutputLanguage::Japanese => "japanese",
+        }
+    }
+
+    pub fn as_llm_language(&self) -> &'static str {
+        match self {
+            OutputLanguage::English => "English",
+            OutputLanguage::Japanese => "Japanese",
+        }
+    }
+}
+
 impl Language {
     pub fn from_str(s: &str) -> Result<Self, EbiError> {
         match s.to_lowercase().as_str() {
@@ -176,5 +206,27 @@ mod tests {
         script.language = Language::Unknown;
         script.detect_language(None, None).unwrap();
         assert_eq!(script.language, Language::Python);
+    }
+
+    #[test]
+    fn test_output_language_from_str() {
+        assert_eq!(OutputLanguage::from_str("english").unwrap(), OutputLanguage::English);
+        assert_eq!(OutputLanguage::from_str("en").unwrap(), OutputLanguage::English);
+        assert_eq!(OutputLanguage::from_str("japanese").unwrap(), OutputLanguage::Japanese);
+        assert_eq!(OutputLanguage::from_str("ja").unwrap(), OutputLanguage::Japanese);
+        assert_eq!(OutputLanguage::from_str("jp").unwrap(), OutputLanguage::Japanese);
+        assert!(OutputLanguage::from_str("invalid").is_err());
+    }
+
+    #[test]
+    fn test_output_language_as_str() {
+        assert_eq!(OutputLanguage::English.as_str(), "english");
+        assert_eq!(OutputLanguage::Japanese.as_str(), "japanese");
+    }
+
+    #[test]
+    fn test_output_language_as_llm_language() {
+        assert_eq!(OutputLanguage::English.as_llm_language(), "English");
+        assert_eq!(OutputLanguage::Japanese.as_llm_language(), "Japanese");
     }
 }

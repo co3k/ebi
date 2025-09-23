@@ -1,17 +1,21 @@
-use crate::models::{AnalysisReport, RiskLevel};
+use crate::models::{AnalysisReport, RiskLevel, OutputLanguage};
 use crate::cli::args::Cli;
+use crate::localization::LocalizedStrings;
 
 pub struct ReportFormatter {
     use_colors: bool,
     verbose: bool,
+    localized_strings: LocalizedStrings,
 }
 
 impl ReportFormatter {
-    pub fn new(cli: &Cli) -> Self {
-        Self {
+    pub fn new(cli: &Cli) -> Result<Self, crate::error::EbiError> {
+        let output_language = cli.get_output_language()?;
+        Ok(Self {
             use_colors: cli.should_use_color(),
             verbose: cli.is_verbose(),
-        }
+            localized_strings: LocalizedStrings::new(output_language),
+        })
     }
 
     pub fn format_analysis_report(&self, report: &AnalysisReport) -> String {
@@ -27,13 +31,15 @@ impl ReportFormatter {
 
         // Summary
         if !report.analysis_summary.is_empty() {
-            output.push_str(&self.format_section("ANALYSIS SUMMARY", &report.analysis_summary));
+            let section_title = self.localized_strings.get_analysis_section("analysis_summary");
+            output.push_str(&self.format_section(section_title, &report.analysis_summary));
             output.push_str("\n\n");
         }
 
         // Code Analysis Results
         if let Some(ref code_analysis) = report.code_analysis {
-            output.push_str(&self.format_section("CODE VULNERABILITY ANALYSIS", &format!(
+            let section_title = self.localized_strings.get_analysis_section("code_vulnerability_analysis");
+            output.push_str(&self.format_section(section_title, &format!(
                 "Risk Level: {}\nConfidence: {:.0}%\nModel: {} ({}ms)\n\nSummary:\n{}",
                 code_analysis.risk_level.as_str(),
                 code_analysis.confidence * 100.0,
@@ -53,7 +59,8 @@ impl ReportFormatter {
 
         // Injection Analysis Results
         if let Some(ref injection_analysis) = report.injection_analysis {
-            output.push_str(&self.format_section("INJECTION DETECTION ANALYSIS", &format!(
+            let section_title = self.localized_strings.get_analysis_section("injection_detection_analysis");
+            output.push_str(&self.format_section(section_title, &format!(
                 "Risk Level: {}\nConfidence: {:.0}%\nModel: {} ({}ms)\n\nSummary:\n{}",
                 injection_analysis.risk_level.as_str(),
                 injection_analysis.confidence * 100.0,
@@ -73,7 +80,8 @@ impl ReportFormatter {
 
         // Risk Explanation
         if let Some(ref explanation) = report.risk_explanation {
-            output.push_str(&self.format_section("RISK EXPLANATION", explanation));
+            let section_title = self.localized_strings.get_analysis_section("risk_explanation");
+            output.push_str(&self.format_section(section_title, explanation));
             output.push_str("\n\n");
         }
 
@@ -86,7 +94,8 @@ impl ReportFormatter {
                 .collect::<Vec<_>>()
                 .join("\n");
 
-            output.push_str(&self.format_section("RECOMMENDED MITIGATIONS", &suggestions));
+            let section_title = self.localized_strings.get_analysis_section("recommended_mitigations");
+            output.push_str(&self.format_section(section_title, &suggestions));
             output.push_str("\n\n");
         }
 
@@ -97,18 +106,25 @@ impl ReportFormatter {
     }
 
     fn format_header(&self, report: &AnalysisReport) -> String {
+        let header_text = self.localized_strings.get("report_header");
+        let script_text = self.localized_strings.get("report_script_info");
+        
         if self.use_colors {
             format!(
-                "\x1b[1m\x1b[36m═══ EBI SECURITY ANALYSIS REPORT ═══\x1b[0m\n\
-                 Script: {} ({} lines, {} bytes)",
+                "\x1b[1m\x1b[36m═══ {} ═══\x1b[0m\n\
+                 {}: {} ({} lines, {} bytes)",
+                header_text,
+                script_text,
                 report.script_info.language.as_str(),
                 report.script_info.line_count,
                 report.script_info.size_bytes
             )
         } else {
             format!(
-                "=== EBI SECURITY ANALYSIS REPORT ===\n\
-                 Script: {} ({} lines, {} bytes)",
+                "=== {} ===\n\
+                 {}: {} ({} lines, {} bytes)",
+                header_text,
+                script_text,
                 report.script_info.language.as_str(),
                 report.script_info.line_count,
                 report.script_info.size_bytes
@@ -130,12 +146,15 @@ impl ReportFormatter {
         };
 
         let reset = if self.use_colors { "\x1b[0m" } else { "" };
+        let risk_text = self.localized_strings.get_risk_level(risk_level.as_str());
+        let overall_risk_text = self.localized_strings.get("report_overall_risk");
 
         format!(
-            "{}{} OVERALL RISK LEVEL: {}{}{}",
+            "{}{} {}: {}{}{}",
             color_code,
             emoji,
-            risk_level.as_str(),
+            overall_risk_text,
+            risk_text,
             reset,
             if !emoji.is_empty() { "" } else { "" }
         )
@@ -172,6 +191,7 @@ impl ReportFormatter {
         };
 
         let reset = if self.use_colors { "\x1b[0m" } else { "" };
+        let section_title = self.localized_strings.get_analysis_section("execution_recommendation");
 
         let recommendation_text = report
             .execution_advice
@@ -179,9 +199,10 @@ impl ReportFormatter {
             .unwrap_or_else(|| report.execution_recommendation.description());
 
         format!(
-            "{}{} EXECUTION RECOMMENDATION{}\n\n{}",
+            "{}{} {}{}\n\n{}",
             color_code,
             emoji,
+            section_title,
             reset,
             recommendation_text
         )
@@ -196,12 +217,16 @@ impl ReportFormatter {
             RiskLevel::Info | RiskLevel::None => "ℹ️",
         };
 
+        let risk_text = self.localized_strings.get_risk_level(report.overall_risk.as_str());
+        let blocked_text = self.localized_strings.get_message("blocked");
+        let review_text = self.localized_strings.get_message("review_required");
+
         format!(
             "{} {} | {} | {}",
             risk_icon,
-            report.overall_risk.as_str(),
+            risk_text,
             report.script_info.language.as_str(),
-            if report.should_block_execution() { "BLOCKED" } else { "REVIEW REQUIRED" }
+            if report.should_block_execution() { blocked_text } else { review_text }
         )
     }
 
@@ -212,12 +237,16 @@ impl ReportFormatter {
             ("", "")
         };
 
+        let error_title = self.localized_strings.get_message("analysis_error");
+        let error_desc = self.localized_strings.get("desc_analysis_failure");
+
         format!(
-            "{}🚨 ANALYSIS ERROR{}\n\n{}\n\n\
-             For security, script execution is blocked when analysis fails.",
+            "{}🚨 {}{}\n\n{}\n\n{}",
             color_code,
+            error_title,
             reset,
-            error
+            error,
+            error_desc
         )
     }
 
@@ -248,7 +277,7 @@ mod tests {
         report.execution_advice = Some("Test recommendation".to_string());
 
         let cli = crate::cli::args::Cli::try_parse_from(vec!["ebi", "bash"]).unwrap();
-        let formatter = ReportFormatter::new(&cli);
+        let formatter = ReportFormatter::new(&cli).unwrap();
 
         let formatted = formatter.format_analysis_report(&report);
 
@@ -267,7 +296,7 @@ mod tests {
         report.execution_advice = Some("BLOCK EXECUTION".to_string());
 
         let cli = crate::cli::args::Cli::try_parse_from(vec!["ebi", "python"]).unwrap();
-        let formatter = ReportFormatter::new(&cli);
+        let formatter = ReportFormatter::new(&cli).unwrap();
 
         let summary = formatter.format_compact_summary(&report);
 
@@ -279,7 +308,7 @@ mod tests {
     #[test]
     fn test_error_formatting() {
         let cli = crate::cli::args::Cli::try_parse_from(vec!["ebi", "bash"]).unwrap();
-        let formatter = ReportFormatter::new(&cli);
+        let formatter = ReportFormatter::new(&cli).unwrap();
 
         let error = crate::error::EbiError::AnalysisTimeout { timeout: 60 };
         let formatted = formatter.format_error(&error);
@@ -291,7 +320,7 @@ mod tests {
     #[test]
     fn test_color_handling() {
         let cli = crate::cli::args::Cli::try_parse_from(vec!["ebi", "bash"]).unwrap();
-        let formatter = ReportFormatter::new(&cli);
+        let formatter = ReportFormatter::new(&cli).unwrap();
 
         // This test will vary based on environment variables
         // In a real environment, NO_COLOR might be set

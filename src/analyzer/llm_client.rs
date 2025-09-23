@@ -161,63 +161,23 @@ impl OpenAiCompatibleClient {
     }
 
     fn build_prompt(&self, request: &AnalysisRequest) -> String {
+        use crate::analyzer::prompts::PromptTemplate;
+        
         match request.analysis_type {
             AnalysisType::CodeVulnerability => {
-                format!(
-                    r#"Please analyze the following {} script for security vulnerabilities:
-
-SCRIPT CONTENT:
-{}
-
-CONTEXT:
-- Script length: {} characters
-- Language: {}
-- Source: {}
-
-Please provide:
-1. Overall risk level (Critical/High/Medium/Low)
-2. Specific vulnerabilities found
-3. Potential impact of each vulnerability
-4. Recommended mitigations
-
-Focus on:
-- Command injection vulnerabilities
-- Privilege escalation risks
-- Network security issues
-- File system access patterns
-- Code execution risks
-
-Respond in a structured format with clear risk assessment."#,
-                    request.context.language.as_str(),
-                    request.content,
-                    request.content.len(),
-                    request.context.language.as_str(),
-                    request.context.source.to_string()
+                PromptTemplate::build_vulnerability_analysis_prompt(
+                    &request.content,
+                    &request.context.language,
+                    &request.context.source,
+                    &request.output_language,
                 )
             }
             AnalysisType::InjectionDetection => {
-                format!(
-                    r#"Please analyze the following content extracted from a {} script for potential injection attacks:
-
-CONTENT TO ANALYZE:
-{}
-
-This content includes comments and string literals from the script. Please check for:
-1. Suspicious patterns that might indicate injection attacks
-2. Obfuscated or encoded content
-3. Unusual character sequences
-4. Potential social engineering attempts
-5. Hidden or misleading information
-
-CONTEXT:
-- Script language: {}
-- Content source: {}
-
-Provide a risk assessment and explain any suspicious patterns found."#,
-                    request.context.language.as_str(),
-                    request.content,
-                    request.context.language.as_str(),
-                    request.context.source.to_string()
+                PromptTemplate::build_injection_analysis_prompt(
+                    &request.content,
+                    &request.context.language,
+                    &request.context.source,
+                    &request.output_language,
                 )
             }
         }
@@ -420,6 +380,7 @@ mod tests {
             "echo hello",
             &Language::Bash,
             &ScriptSource::Stdin,
+            &crate::models::OutputLanguage::English,
         );
         assert!(prompt.contains("bash"));
         assert!(prompt.contains("echo hello"));

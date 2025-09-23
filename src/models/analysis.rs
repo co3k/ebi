@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use crate::models::script::Language;
+use crate::models::script::{Language, OutputLanguage};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AnalysisRequest {
@@ -8,6 +8,7 @@ pub struct AnalysisRequest {
     pub context: AnalysisContext,
     pub model: String,
     pub timeout_seconds: u64,
+    pub output_language: OutputLanguage,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

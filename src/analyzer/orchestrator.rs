@@ -1,6 +1,6 @@
 use crate::models::{
     AnalysisRequest, AnalysisResult, AnalysisType, AnalysisContext,
-    ScriptComponents, Language, ScriptSource,
+    ScriptComponents, Language, ScriptSource, OutputLanguage,
 };
 use crate::analyzer::llm_client::{LlmProvider, create_llm_client};
 use crate::error::EbiError;
@@ -36,6 +36,7 @@ impl AnalysisOrchestrator {
         language: &Language,
         source: &ScriptSource,
         model: &str,
+        output_language: &OutputLanguage,
     ) -> Result<Vec<AnalysisResult>, EbiError> {
         let context = AnalysisContext {
             language: language.clone(),
@@ -55,6 +56,7 @@ impl AnalysisOrchestrator {
             context: context.clone(),
             model: model.to_string(),
             timeout_seconds: self.default_timeout.as_secs(),
+            output_language: output_language.clone(),
         };
         requests.push(code_request);
 
@@ -67,6 +69,7 @@ impl AnalysisOrchestrator {
                 context: context.clone(),
                 model: model.to_string(),
                 timeout_seconds: self.default_timeout.as_secs(),
+                output_language: output_language.clone(),
             };
             requests.push(injection_request);
         }
@@ -158,6 +161,7 @@ impl AnalysisOrchestrator {
         language: &Language,
         source: &ScriptSource,
         model: &str,
+        output_language: &OutputLanguage,
     ) -> Result<AnalysisResult, EbiError> {
         let context = AnalysisContext {
             language: language.clone(),
@@ -172,6 +176,7 @@ impl AnalysisOrchestrator {
             context,
             model: model.to_string(),
             timeout_seconds: self.default_timeout.as_secs(),
+            output_language: output_language.clone(),
         };
 
         self.execute_single_analysis(&request).await
@@ -215,6 +220,7 @@ impl AnalysisOrchestrator {
             },
             model: self.llm_client.get_model_name().to_string(),
             timeout_seconds: 30,
+            output_language: OutputLanguage::English,
         };
 
         // Try a quick test analysis
@@ -326,6 +332,7 @@ mod tests {
             },
             model: "test-model".to_string(),
             timeout_seconds: 60,
+            output_language: OutputLanguage::English,
         };
 
         assert!(orchestrator.validate_analysis_request(&valid_request).is_ok());
@@ -341,6 +348,7 @@ mod tests {
             },
             model: "test-model".to_string(),
             timeout_seconds: 60,
+            output_language: OutputLanguage::English,
         };
 
         assert!(orchestrator.validate_analysis_request(&invalid_request).is_err());

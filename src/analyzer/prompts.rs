@@ -1,4 +1,4 @@
-use crate::models::{Language, AnalysisType, ScriptSource};
+use crate::models::{Language, AnalysisType, ScriptSource, OutputLanguage};
 
 pub struct PromptTemplate;
 
@@ -7,6 +7,7 @@ impl PromptTemplate {
         content: &str,
         language: &Language,
         source: &ScriptSource,
+        output_language: &OutputLanguage,
     ) -> String {
         let language_specific_guidance = match language {
             Language::Bash => Self::get_bash_security_guidance(),
@@ -20,6 +21,7 @@ impl PromptTemplate {
 SCRIPT LANGUAGE: {}
 SCRIPT SOURCE: {}
 CONTENT LENGTH: {} characters
+OUTPUT LANGUAGE: {}
 
 SCRIPT CONTENT:
 ```{}
@@ -50,13 +52,17 @@ RECOMMENDED ACTIONS:
 [Specific steps to mitigate identified risks]
 
 CONFIDENCE LEVEL: [High/Medium/Low]
-[Brief explanation of analysis confidence]"#,
+[Brief explanation of analysis confidence]
+
+IMPORTANT: Please provide all output in {} language."#,
             language.as_str(),
             source,
             content.len(),
+            output_language.as_llm_language(),
             language.as_str().to_lowercase(),
             content,
-            language_specific_guidance
+            language_specific_guidance,
+            output_language.as_llm_language()
         )
     }
 
@@ -64,12 +70,14 @@ CONFIDENCE LEVEL: [High/Medium/Low]
         content: &str,
         language: &Language,
         source: &ScriptSource,
+        output_language: &OutputLanguage,
     ) -> String {
         format!(
             r#"INJECTION DETECTION ANALYSIS
 
 SCRIPT LANGUAGE: {}
 SCRIPT SOURCE: {}
+OUTPUT LANGUAGE: {}
 
 EXTRACTED CONTENT FOR ANALYSIS:
 {}
@@ -104,12 +112,16 @@ SOCIAL ENGINEERING INDICATORS:
 RECOMMENDATIONS:
 [Specific steps to address identified issues]
 
-CONFIDENCE LEVEL: [High/Medium/Low]"#,
+CONFIDENCE LEVEL: [High/Medium/Low]
+
+IMPORTANT: Please provide all output in {} language."#,
             language.as_str(),
             source,
+            output_language.as_llm_language(),
             content,
             language.as_str(),
-            Self::get_injection_patterns_guidance(language)
+            Self::get_injection_patterns_guidance(language),
+            output_language.as_llm_language()
         )
     }
 
@@ -220,7 +232,7 @@ an attempt to trick users or hide malicious functionality."#.to_string()
         }
     }
 
-    pub fn build_system_prompt(analysis_type: &AnalysisType) -> String {
+    pub fn build_system_prompt(analysis_type: &AnalysisType, output_language: &OutputLanguage) -> String {
         let base_instructions = r#"You are an AI security analyst. Provide accurate, actionable security analysis.
 
 IMPORTANT GUIDELINES:
@@ -229,11 +241,12 @@ IMPORTANT GUIDELINES:
 - Explain the security impact of each finding
 - Suggest concrete mitigation steps
 - Use the requested output format consistently
-- If no significant issues are found, clearly state this"#;
+- If no significant issues are found, clearly state this
+- Provide all output in the specified language"#;
 
         let context = Self::build_context_prompt(analysis_type);
 
-        format!("{}\n\n{}", base_instructions, context)
+        format!("{}\n\n{}\n\nOUTPUT LANGUAGE: {}", base_instructions, context, output_language.as_llm_language())
     }
 
     pub fn validate_prompt_length(prompt: &str, max_tokens: usize) -> Result<String, String> {
@@ -301,12 +314,14 @@ mod tests {
             "echo hello",
             &Language::Bash,
             &ScriptSource::Stdin,
+            &OutputLanguage::English,
         );
 
         assert!(prompt.contains("SECURITY ANALYSIS REQUEST"));
         assert!(prompt.contains("bash"));
         assert!(prompt.contains("echo hello"));
         assert!(prompt.contains("VULNERABILITIES FOUND"));
+        assert!(prompt.contains("OUTPUT LANGUAGE: English"));
     }
 
     #[test]
@@ -316,22 +331,26 @@ mod tests {
             content,
             &Language::Python,
             &ScriptSource::Stdin,
+            &OutputLanguage::English,
         );
 
         assert!(prompt.contains("INJECTION DETECTION"));
         assert!(prompt.contains("python"));
         assert!(prompt.contains("This is a comment"));
         assert!(prompt.contains("SUSPICIOUS PATTERNS"));
+        assert!(prompt.contains("OUTPUT LANGUAGE: English"));
     }
 
     #[test]
     fn test_system_prompt_generation() {
-        let prompt = PromptTemplate::build_system_prompt(&AnalysisType::CodeVulnerability);
+        let prompt = PromptTemplate::build_system_prompt(&AnalysisType::CodeVulnerability, &OutputLanguage::English);
         assert!(prompt.contains("security analyst"));
         assert!(prompt.contains("vulnerabilities"));
+        assert!(prompt.contains("OUTPUT LANGUAGE: English"));
 
-        let prompt = PromptTemplate::build_system_prompt(&AnalysisType::InjectionDetection);
+        let prompt = PromptTemplate::build_system_prompt(&AnalysisType::InjectionDetection, &OutputLanguage::Japanese);
         assert!(prompt.contains("injection attack"));
+        assert!(prompt.contains("OUTPUT LANGUAGE: Japanese"));
     }
 
     #[test]

@@ -60,7 +60,7 @@ impl CliHandler {
         let analysis_report = self.analyze_script(&script, &components).await?;
 
         // Step 5: Display analysis report using integrated formatter
-        let formatter = ReportFormatter::new(&self.cli);
+        let formatter = ReportFormatter::new(&self.cli)?;
         println!("{}", formatter.format_analysis_report(&analysis_report));
 
         // Step 6: Check if execution is blocked
@@ -144,11 +144,13 @@ impl CliHandler {
         };
 
         // Perform LLM analysis
+        let output_language = self.cli.get_output_language()?;
         let analysis_results = match orchestrator.analyze_script_components(
             components,
             &script.language,
             &ScriptSource::Stdin,
             self.cli.get_llm_model(),
+            &output_language,
         ).await {
             Ok(results) => results,
             Err(e) => {

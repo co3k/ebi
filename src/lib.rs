@@ -4,6 +4,7 @@ pub mod cli;
 pub mod parser;
 pub mod analyzer;
 pub mod executor;
+pub mod localization;
 
 pub use error::EbiError;
 

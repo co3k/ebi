@@ -1,5 +1,6 @@
 use clap::Parser;
 use crate::error::EbiError;
+use crate::models::OutputLanguage;
 
 #[derive(Parser, Debug)]
 #[command(name = "ebi")]
@@ -26,6 +27,10 @@ pub struct Cli {
     /// Enable debug output including LLM communications
     #[arg(short = 'd', long)]
     pub debug: bool,
+
+    /// Output language for analysis reports (english, japanese)
+    #[arg(long, default_value = "english")]
+    pub output_lang: String,
 
     /// Target command and its arguments
     #[arg(trailing_var_arg = true, required = true)]
@@ -62,6 +67,9 @@ impl Cli {
         if let Some(ref lang) = self.lang {
             crate::models::Language::from_str(lang)?;
         }
+
+        // Validate output language
+        self.get_output_language()?;
 
         Ok(())
     }
@@ -111,6 +119,16 @@ impl Cli {
         // Disable color if NO_COLOR environment variable is set
         std::env::var("NO_COLOR").is_err()
     }
+
+    pub fn get_output_language(&self) -> Result<OutputLanguage, EbiError> {
+        // Check environment variable override first
+        if let Ok(env_lang) = std::env::var("EBI_OUTPUT_LANGUAGE") {
+            return OutputLanguage::from_str(&env_lang);
+        }
+        
+        // Fall back to CLI option
+        OutputLanguage::from_str(&self.output_lang)
+    }
 }
 
 fn validate_timeout(s: &str) -> Result<u64, String> {
@@ -139,6 +157,7 @@ mod tests {
         assert!(cli.lang.is_none());
         assert!(!cli.verbose);
         assert!(!cli.debug);
+        assert_eq!(cli.output_lang, "english");
     }
 
     #[test]
@@ -233,5 +252,50 @@ mod tests {
         cli.lang = Some("python".to_string());
         cli.timeout = 5; // Too low
         assert!(cli.validate().is_err());
+    }
+
+    #[test]
+    fn test_output_language_parsing() {
+        let args = vec!["ebi", "--output-lang", "japanese", "bash"];
+        let cli = Cli::try_parse_from(args).unwrap();
+        
+        assert_eq!(cli.output_lang, "japanese");
+        assert!(cli.get_output_language().is_ok());
+        assert_eq!(cli.get_output_language().unwrap(), OutputLanguage::Japanese);
+    }
+
+    #[test]
+    fn test_output_language_validation() {
+        let args = vec!["ebi", "--output-lang", "invalid", "bash"];
+        let cli = Cli::try_parse_from(args).unwrap();
+        
+        assert!(cli.get_output_language().is_err());
+    }
+
+    #[test]
+    fn test_environment_variable_override() {
+        // Test that environment variable overrides CLI option
+        std::env::set_var("EBI_OUTPUT_LANGUAGE", "japanese");
+        
+        let args = vec!["ebi", "--output-lang", "english", "bash"];
+        let cli = Cli::try_parse_from(args).unwrap();
+        
+        assert_eq!(cli.get_output_language().unwrap(), OutputLanguage::Japanese);
+        
+        // Clean up
+        std::env::remove_var("EBI_OUTPUT_LANGUAGE");
+    }
+
+    #[test]
+    fn test_environment_variable_invalid() {
+        std::env::set_var("EBI_OUTPUT_LANGUAGE", "invalid");
+        
+        let args = vec!["ebi", "bash"];
+        let cli = Cli::try_parse_from(args).unwrap();
+        
+        assert!(cli.get_output_language().is_err());
+        
+        // Clean up
+        std::env::remove_var("EBI_OUTPUT_LANGUAGE");
     }
 }

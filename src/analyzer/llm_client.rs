@@ -73,6 +73,117 @@ pub trait LlmProvider: Send + Sync {
     fn get_timeout(&self) -> Duration;
 }
 
+fn extract_summary_from_response(response: &str) -> String {
+    let lines: Vec<&str> = response.lines().collect();
+
+    for (i, line) in lines.iter().enumerate() {
+        let line_lower = line.to_lowercase();
+        if line_lower.contains("summary:") || line_lower.contains("概要:") {
+            let summary_lines: Vec<&str> = lines
+                .iter()
+                .skip(i + 1)
+                .take_while(|l| {
+                    let trimmed = l.trim();
+                    if trimmed.is_empty() {
+                        return false;
+                    }
+
+                    let lower = trimmed.to_lowercase();
+                    !lower.contains("analysis:") && !lower.contains("分析:")
+                })
+                .copied()
+                .collect();
+
+            if !summary_lines.is_empty() {
+                return summary_lines.join("\n").trim().to_string();
+            }
+        }
+    }
+
+    let meaningful_lines: Vec<&str> = lines
+        .iter()
+        .filter(|line| {
+            let line_clean = line.trim();
+            !line_clean.is_empty()
+                && line_clean.len() > 20
+                && !line_clean.starts_with('#')
+                && !line_clean.starts_with("RISK LEVEL:")
+                && !line_clean.starts_with("CONFIDENCE:")
+        })
+        .take(5)
+        .copied()
+        .collect();
+
+    if meaningful_lines.is_empty() {
+        response
+            .lines()
+            .take(3)
+            .collect::<Vec<_>>()
+            .join(" ")
+            .chars()
+            .take(300)
+            .collect()
+    } else {
+        meaningful_lines.join(" ").chars().take(500).collect()
+    }
+}
+
+fn determine_risk_level(response_lower: &str) -> crate::models::RiskLevel {
+    if response_lower.contains("risk level: critical")
+        || response_lower.contains("リスクレベル: クリティカル")
+        || response_lower.contains("critical risk")
+    {
+        crate::models::RiskLevel::Critical
+    } else if response_lower.contains("risk level: high")
+        || response_lower.contains("リスクレベル: 高")
+        || response_lower.contains("high risk")
+    {
+        crate::models::RiskLevel::High
+    } else if response_lower.contains("risk level: medium")
+        || response_lower.contains("リスクレベル: 中")
+        || response_lower.contains("medium risk")
+    {
+        crate::models::RiskLevel::Medium
+    } else if response_lower.contains("risk level: low")
+        || response_lower.contains("リスクレベル: 低")
+        || response_lower.contains("low risk")
+    {
+        crate::models::RiskLevel::Low
+    } else if response_lower.contains("risk level: info")
+        || response_lower.contains("risk level: none")
+        || response_lower.contains("リスクレベル: 情報")
+    {
+        crate::models::RiskLevel::Info
+    } else if response_lower.contains("critical") || response_lower.contains("クリティカル") {
+        crate::models::RiskLevel::Critical
+    } else if response_lower.contains("high") || response_lower.contains("高リスク") {
+        crate::models::RiskLevel::High
+    } else if response_lower.contains("medium") || response_lower.contains("中リスク") {
+        crate::models::RiskLevel::Medium
+    } else if response_lower.contains("low") || response_lower.contains("低リスク") {
+        crate::models::RiskLevel::Low
+    } else {
+        crate::models::RiskLevel::Info
+    }
+}
+
+fn calculate_confidence(response: &str, response_lower: &str) -> f32 {
+    if response.len() > 100
+        && (response_lower.contains("vulnerability")
+            || response_lower.contains("risk")
+            || response_lower.contains("security")
+            || response_lower.contains("脆弱性")
+            || response_lower.contains("リスク")
+            || response_lower.contains("セキュリティ"))
+    {
+        0.85
+    } else if response.len() > 50 {
+        0.70
+    } else {
+        0.50
+    }
+}
+
 pub struct OpenAiCompatibleClient {
     config: LlmConfig,
     client: reqwest::Client,
@@ -92,7 +203,8 @@ impl OpenAiCompatibleClient {
 
     async fn make_api_request(&self, request: &AnalysisRequest) -> Result<String, EbiError> {
         let prompt = self.build_prompt(request);
-        let api_request = self.build_api_request(prompt, &request.analysis_type, &request.output_language);
+        let api_request =
+            self.build_api_request(prompt, &request.analysis_type, &request.output_language);
 
         let mut retries = 0;
         loop {
@@ -170,22 +282,18 @@ impl OpenAiCompatibleClient {
         use crate::analyzer::prompts::PromptTemplate;
 
         match request.analysis_type {
-            AnalysisType::CodeVulnerability => {
-                PromptTemplate::build_vulnerability_analysis_prompt(
-                    &request.content,
-                    &request.context.language,
-                    &request.context.source,
-                    &request.output_language,
-                )
-            }
-            AnalysisType::InjectionDetection => {
-                PromptTemplate::build_injection_analysis_prompt(
-                    &request.content,
-                    &request.context.language,
-                    &request.context.source,
-                    &request.output_language,
-                )
-            }
+            AnalysisType::CodeVulnerability => PromptTemplate::build_vulnerability_analysis_prompt(
+                &request.content,
+                &request.context.language,
+                &request.context.source,
+                &request.output_language,
+            ),
+            AnalysisType::InjectionDetection => PromptTemplate::build_injection_analysis_prompt(
+                &request.content,
+                &request.context.language,
+                &request.context.source,
+                &request.output_language,
+            ),
             AnalysisType::DetailedRiskAnalysis => {
                 // For now, pass empty initial findings - this could be enhanced later
                 PromptTemplate::build_detailed_risk_analysis_prompt(
@@ -209,8 +317,18 @@ impl OpenAiCompatibleClient {
         }
     }
 
-    fn build_api_request(&self, prompt: String, analysis_type: &AnalysisType, output_language: &OutputLanguage) -> LlmApiRequest {
-        build_llm_api_request(&self.config.model_name, prompt, analysis_type, output_language)
+    fn build_api_request(
+        &self,
+        prompt: String,
+        analysis_type: &AnalysisType,
+        output_language: &OutputLanguage,
+    ) -> LlmApiRequest {
+        build_llm_api_request(
+            &self.config.model_name,
+            prompt,
+            analysis_type,
+            output_language,
+        )
     }
 }
 
@@ -254,109 +372,12 @@ impl LlmProvider for OpenAiCompatibleClient {
 }
 
 impl OpenAiCompatibleClient {
-    fn extract_summary(response: &str) -> String {
-        // Look for explicit summary section
-        let lines: Vec<&str> = response.lines().collect();
-
-        // Try to find summary section
-        for (i, line) in lines.iter().enumerate() {
-            let line_lower = line.to_lowercase();
-            if line_lower.contains("summary:") || line_lower.contains("概要:") {
-                // Found summary header, take next few lines
-                let summary_lines: Vec<&str> = lines
-                    .iter()
-                    .skip(i + 1)
-                    .take_while(|l| !l.trim().is_empty() && !l.to_lowercase().contains("analysis:") && !l.to_lowercase().contains("分析:"))
-                    .copied()
-                    .collect();
-
-                if !summary_lines.is_empty() {
-                    return summary_lines.join("\n").trim().to_string();
-                }
-            }
-        }
-
-        // Fallback: take meaningful content (skip headers, take substantial paragraphs)
-        let meaningful_lines: Vec<&str> = lines
-            .iter()
-            .filter(|line| {
-                let line_clean = line.trim();
-                !line_clean.is_empty() &&
-                line_clean.len() > 20 &&
-                !line_clean.starts_with('#') &&
-                !line_clean.starts_with("RISK LEVEL:") &&
-                !line_clean.starts_with("CONFIDENCE:")
-            })
-            .take(5)
-            .copied()
-            .collect();
-
-        if meaningful_lines.is_empty() {
-            response.lines().take(3).collect::<Vec<_>>().join(" ").chars().take(300).collect()
-        } else {
-            meaningful_lines.join(" ").chars().take(500).collect()
-        }
-    }
-
     fn parse_analysis_response(response: &str) -> (crate::models::RiskLevel, String, f32) {
-        use crate::models::RiskLevel;
-
         let response_lower = response.to_lowercase();
 
-        // Extract risk level with more precise matching
-        let risk_level = if response_lower.contains("risk level: critical") ||
-                           response_lower.contains("リスクレベル: クリティカル") ||
-                           response_lower.contains("critical risk") {
-            RiskLevel::Critical
-        } else if response_lower.contains("risk level: high") ||
-                  response_lower.contains("リスクレベル: 高") ||
-                  response_lower.contains("high risk") {
-            RiskLevel::High
-        } else if response_lower.contains("risk level: medium") ||
-                  response_lower.contains("リスクレベル: 中") ||
-                  response_lower.contains("medium risk") {
-            RiskLevel::Medium
-        } else if response_lower.contains("risk level: low") ||
-                  response_lower.contains("リスクレベル: 低") ||
-                  response_lower.contains("low risk") {
-            RiskLevel::Low
-        } else if response_lower.contains("risk level: info") ||
-                  response_lower.contains("risk level: none") ||
-                  response_lower.contains("リスクレベル: 情報") {
-            RiskLevel::Info
-        } else {
-            // Fallback - look for standalone keywords
-            if response_lower.contains("critical") || response_lower.contains("クリティカル") {
-                RiskLevel::Critical
-            } else if response_lower.contains("high") || response_lower.contains("高リスク") {
-                RiskLevel::High
-            } else if response_lower.contains("medium") || response_lower.contains("中リスク") {
-                RiskLevel::Medium
-            } else if response_lower.contains("low") || response_lower.contains("低リスク") {
-                RiskLevel::Low
-            } else {
-                RiskLevel::Info
-            }
-        };
-
-        // Extract summary using improved method
-        let summary = Self::extract_summary(response);
-
-        // Calculate confidence based on response quality
-        let confidence = if response.len() > 100
-            && (response_lower.contains("vulnerability") ||
-                response_lower.contains("risk") ||
-                response_lower.contains("security") ||
-                response_lower.contains("脆弱性") ||
-                response_lower.contains("リスク") ||
-                response_lower.contains("セキュリティ"))
-        {
-            0.85
-        } else if response.len() > 50 {
-            0.70
-        } else {
-            0.50
-        };
+        let risk_level = determine_risk_level(&response_lower);
+        let summary = extract_summary_from_response(response);
+        let confidence = calculate_confidence(response, &response_lower);
 
         (risk_level, summary, confidence)
     }
@@ -422,7 +443,8 @@ impl ClaudeClient {
 
     async fn make_api_request(&self, request: &AnalysisRequest) -> Result<String, EbiError> {
         let prompt = self.build_prompt(request);
-        let api_request = self.build_api_request(prompt, &request.analysis_type, &request.output_language);
+        let api_request =
+            self.build_api_request(prompt, &request.analysis_type, &request.output_language);
 
         let mut retries = 0;
         loop {
@@ -433,7 +455,10 @@ impl ClaudeClient {
                 .client
                 .post(&self.config.api_endpoint)
                 .header("Content-Type", "application/json")
-                .header("x-api-key", self.config.api_key.as_ref().unwrap_or(&"".to_string()))
+                .header(
+                    "x-api-key",
+                    self.config.api_key.as_ref().unwrap_or(&"".to_string()),
+                )
                 .header("anthropic-version", "2023-06-01")
                 .json(&api_request);
 
@@ -495,22 +520,18 @@ impl ClaudeClient {
         use crate::analyzer::prompts::PromptTemplate;
 
         match request.analysis_type {
-            AnalysisType::CodeVulnerability => {
-                PromptTemplate::build_vulnerability_analysis_prompt(
-                    &request.content,
-                    &request.context.language,
-                    &request.context.source,
-                    &request.output_language,
-                )
-            }
-            AnalysisType::InjectionDetection => {
-                PromptTemplate::build_injection_analysis_prompt(
-                    &request.content,
-                    &request.context.language,
-                    &request.context.source,
-                    &request.output_language,
-                )
-            }
+            AnalysisType::CodeVulnerability => PromptTemplate::build_vulnerability_analysis_prompt(
+                &request.content,
+                &request.context.language,
+                &request.context.source,
+                &request.output_language,
+            ),
+            AnalysisType::InjectionDetection => PromptTemplate::build_injection_analysis_prompt(
+                &request.content,
+                &request.context.language,
+                &request.context.source,
+                &request.output_language,
+            ),
             AnalysisType::DetailedRiskAnalysis => {
                 PromptTemplate::build_detailed_risk_analysis_prompt(
                     &request.content,
@@ -532,7 +553,12 @@ impl ClaudeClient {
         }
     }
 
-    fn build_api_request(&self, prompt: String, analysis_type: &AnalysisType, output_language: &OutputLanguage) -> ClaudeApiRequest {
+    fn build_api_request(
+        &self,
+        prompt: String,
+        analysis_type: &AnalysisType,
+        output_language: &OutputLanguage,
+    ) -> ClaudeApiRequest {
         use crate::analyzer::prompts::PromptTemplate;
         let system_prompt = PromptTemplate::build_system_prompt(analysis_type, output_language);
 
@@ -589,113 +615,12 @@ impl LlmProvider for ClaudeClient {
 }
 
 impl ClaudeClient {
-    fn extract_summary(response: &str) -> String {
-        // Look for explicit summary section
-        let lines: Vec<&str> = response.lines().collect();
-
-        // Try to find summary section
-        for (i, line) in lines.iter().enumerate() {
-            let line_lower = line.to_lowercase();
-            if line_lower.contains("summary:") || line_lower.contains("概要:") {
-                // Found summary header, take next few lines
-                let summary_lines: Vec<&str> = lines
-                    .iter()
-                    .skip(i + 1)
-                    .take_while(|l| !l.trim().is_empty() && !l.to_lowercase().contains("analysis:") && !l.to_lowercase().contains("分析:"))
-                    .copied()
-                    .collect();
-
-                if !summary_lines.is_empty() {
-                    return summary_lines.join("\n").trim().to_string();
-                }
-            }
-        }
-
-        // Fallback: take meaningful content (skip headers, take substantial paragraphs)
-        let meaningful_lines: Vec<&str> = lines
-            .iter()
-            .filter(|line| {
-                let line_clean = line.trim();
-                !line_clean.is_empty() &&
-                line_clean.len() > 20 &&
-                !line_clean.starts_with('#') &&
-                !line_clean.starts_with("RISK LEVEL:") &&
-                !line_clean.starts_with("CONFIDENCE:")
-            })
-            .take(5)
-            .copied()
-            .collect();
-
-        if meaningful_lines.is_empty() {
-            response.lines().take(3).collect::<Vec<_>>().join(" ").chars().take(300).collect()
-        } else {
-            meaningful_lines.join(" ").chars().take(500).collect()
-        }
-    }
-
     fn parse_analysis_response(response: &str) -> (crate::models::RiskLevel, String, f32) {
-        use crate::models::RiskLevel;
-
         let response_lower = response.to_lowercase();
 
-        // Extract risk level with more precise matching
-        let risk_level = if response_lower.contains("risk level: critical") ||
-                           response_lower.contains("リスクレベル: クリティカル") ||
-                           response_lower.contains("critical risk") {
-            RiskLevel::Critical
-        } else if response_lower.contains("risk level: high") ||
-                  response_lower.contains("リスクレベル: 高") ||
-                  response_lower.contains("high risk") {
-            RiskLevel::High
-        } else if response_lower.contains("risk level: medium") ||
-                  response_lower.contains("リスクレベル: 中") ||
-                  response_lower.contains("medium risk") {
-            RiskLevel::Medium
-        } else if response_lower.contains("risk level: low") ||
-                  response_lower.contains("リスクレベル: 低") ||
-                  response_lower.contains("low risk") {
-            RiskLevel::Low
-        } else if response_lower.contains("risk level: info") ||
-                  response_lower.contains("risk level: none") ||
-                  response_lower.contains("リスクレベル: 情報") {
-            RiskLevel::Info
-        } else {
-            // Fallback - look for standalone keywords
-            if response_lower.contains("critical") || response_lower.contains("クリティカル") {
-                RiskLevel::Critical
-            } else if response_lower.contains("high") || response_lower.contains("高リスク") {
-                RiskLevel::High
-            } else if response_lower.contains("medium") || response_lower.contains("中リスク") {
-                RiskLevel::Medium
-            } else if response_lower.contains("low") || response_lower.contains("低リスク") {
-                RiskLevel::Low
-            } else {
-                RiskLevel::Info
-            }
-        };
-
-        // Extract summary (first few sentences)
-        let summary = response
-            .lines()
-            .take(3)
-            .collect::<Vec<_>>()
-            .join(" ")
-            .chars()
-            .take(200)
-            .collect::<String>();
-
-        // Calculate confidence based on response quality
-        let confidence = if response.len() > 100
-            && (response_lower.contains("vulnerability")
-                || response_lower.contains("risk")
-                || response_lower.contains("security"))
-        {
-            0.85
-        } else if response.len() > 50 {
-            0.70
-        } else {
-            0.50
-        };
+        let risk_level = determine_risk_level(&response_lower);
+        let summary = extract_summary_from_response(response);
+        let confidence = calculate_confidence(response, &response_lower);
 
         (risk_level, summary, confidence)
     }
@@ -764,7 +689,8 @@ impl GeminiClient {
 
     async fn make_api_request(&self, request: &AnalysisRequest) -> Result<String, EbiError> {
         let prompt = self.build_prompt(request);
-        let api_request = self.build_api_request(prompt, &request.analysis_type, &request.output_language);
+        let api_request =
+            self.build_api_request(prompt, &request.analysis_type, &request.output_language);
 
         let mut retries = 0;
         loop {
@@ -842,22 +768,18 @@ impl GeminiClient {
         use crate::analyzer::prompts::PromptTemplate;
 
         match request.analysis_type {
-            AnalysisType::CodeVulnerability => {
-                PromptTemplate::build_vulnerability_analysis_prompt(
-                    &request.content,
-                    &request.context.language,
-                    &request.context.source,
-                    &request.output_language,
-                )
-            }
-            AnalysisType::InjectionDetection => {
-                PromptTemplate::build_injection_analysis_prompt(
-                    &request.content,
-                    &request.context.language,
-                    &request.context.source,
-                    &request.output_language,
-                )
-            }
+            AnalysisType::CodeVulnerability => PromptTemplate::build_vulnerability_analysis_prompt(
+                &request.content,
+                &request.context.language,
+                &request.context.source,
+                &request.output_language,
+            ),
+            AnalysisType::InjectionDetection => PromptTemplate::build_injection_analysis_prompt(
+                &request.content,
+                &request.context.language,
+                &request.context.source,
+                &request.output_language,
+            ),
             AnalysisType::DetailedRiskAnalysis => {
                 PromptTemplate::build_detailed_risk_analysis_prompt(
                     &request.content,
@@ -879,7 +801,12 @@ impl GeminiClient {
         }
     }
 
-    fn build_api_request(&self, prompt: String, analysis_type: &AnalysisType, output_language: &OutputLanguage) -> GeminiApiRequest {
+    fn build_api_request(
+        &self,
+        prompt: String,
+        analysis_type: &AnalysisType,
+        output_language: &OutputLanguage,
+    ) -> GeminiApiRequest {
         use crate::analyzer::prompts::PromptTemplate;
         let system_prompt = PromptTemplate::build_system_prompt(analysis_type, output_language);
         let full_prompt = format!("{}\n\n{}", system_prompt, prompt);
@@ -937,45 +864,11 @@ impl LlmProvider for GeminiClient {
 
 impl GeminiClient {
     fn parse_analysis_response(response: &str) -> (crate::models::RiskLevel, String, f32) {
-        use crate::models::RiskLevel;
-
         let response_lower = response.to_lowercase();
 
-        // Extract risk level
-        let risk_level = if response_lower.contains("critical") {
-            RiskLevel::Critical
-        } else if response_lower.contains("high") {
-            RiskLevel::High
-        } else if response_lower.contains("medium") {
-            RiskLevel::Medium
-        } else if response_lower.contains("low") {
-            RiskLevel::Low
-        } else {
-            RiskLevel::Info // Default if unclear
-        };
-
-        // Extract summary (first few sentences)
-        let summary = response
-            .lines()
-            .take(3)
-            .collect::<Vec<_>>()
-            .join(" ")
-            .chars()
-            .take(200)
-            .collect::<String>();
-
-        // Calculate confidence based on response quality
-        let confidence = if response.len() > 100
-            && (response_lower.contains("vulnerability")
-                || response_lower.contains("risk")
-                || response_lower.contains("security"))
-        {
-            0.85
-        } else if response.len() > 50 {
-            0.70
-        } else {
-            0.50
-        };
+        let risk_level = determine_risk_level(&response_lower);
+        let summary = extract_summary_from_response(response);
+        let confidence = calculate_confidence(response, &response_lower);
 
         (risk_level, summary, confidence)
     }
@@ -1005,7 +898,10 @@ pub fn create_llm_client(
         )
     } else if is_gemini_model(trimmed_model) {
         (
-            format!("https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent", trimmed_model),
+            format!(
+                "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent",
+                trimmed_model
+            ),
             trimmed_model.to_string(),
         )
     } else {
@@ -1034,7 +930,12 @@ pub fn create_llm_client(
     Ok(client)
 }
 
-fn build_llm_api_request(model_name: &str, prompt: String, analysis_type: &AnalysisType, output_language: &OutputLanguage) -> LlmApiRequest {
+fn build_llm_api_request(
+    model_name: &str,
+    prompt: String,
+    analysis_type: &AnalysisType,
+    output_language: &OutputLanguage,
+) -> LlmApiRequest {
     use crate::analyzer::prompts::PromptTemplate;
 
     let uses_reasoning = uses_reasoning_parameters(model_name);
@@ -1164,12 +1065,22 @@ mod tests {
     #[test]
     fn test_build_api_request_switches_token_parameters() {
         use crate::models::{AnalysisType, OutputLanguage};
-        let request = super::build_llm_api_request("gpt-5-mini", "prompt".to_string(), &AnalysisType::CodeVulnerability, &OutputLanguage::English);
+        let request = super::build_llm_api_request(
+            "gpt-5-mini",
+            "prompt".to_string(),
+            &AnalysisType::CodeVulnerability,
+            &OutputLanguage::English,
+        );
         assert!(request.max_tokens.is_none());
         assert_eq!(request.max_completion_tokens, Some(1000));
         assert!(request.temperature.is_none());
 
-        let classic_request = super::build_llm_api_request("gpt-4o", "prompt".to_string(), &AnalysisType::CodeVulnerability, &OutputLanguage::English);
+        let classic_request = super::build_llm_api_request(
+            "gpt-4o",
+            "prompt".to_string(),
+            &AnalysisType::CodeVulnerability,
+            &OutputLanguage::English,
+        );
         assert_eq!(classic_request.max_tokens, Some(1000));
         assert!(classic_request.max_completion_tokens.is_none());
         assert_eq!(classic_request.temperature, Some(0.3));
@@ -1185,7 +1096,7 @@ mod tests {
         assert!(super::is_claude_model("claude-2"));
         assert!(super::is_claude_model("claude-instant"));
         assert!(super::is_claude_model("anthropic/claude-3.5-sonnet"));
-        
+
         assert!(!super::is_claude_model("gpt-4"));
         assert!(!super::is_claude_model("gemini-pro"));
         assert!(!super::is_claude_model("unknown-model"));
@@ -1193,9 +1104,10 @@ mod tests {
 
     #[test]
     fn test_claude_client_creation() {
-        let client = super::create_llm_client("claude-3.5-sonnet", Some("test-key".to_string()), 60);
+        let client =
+            super::create_llm_client("claude-3.5-sonnet", Some("test-key".to_string()), 60);
         assert!(client.is_ok());
-        
+
         let client = client.unwrap();
         assert_eq!(client.get_model_name(), "claude-3.5-sonnet");
     }
@@ -1219,7 +1131,7 @@ mod tests {
         assert!(super::is_gemini_model("gemini-2.0-flash-exp"));
         assert!(super::is_gemini_model("gemini-2.5-flash"));
         assert!(super::is_gemini_model("gemini/gemini-1.5-pro"));
-        
+
         assert!(!super::is_gemini_model("gpt-4"));
         assert!(!super::is_gemini_model("claude-3.5-sonnet"));
         assert!(!super::is_gemini_model("unknown-model"));
@@ -1229,7 +1141,7 @@ mod tests {
     fn test_gemini_client_creation() {
         let client = super::create_llm_client("gemini-2.5-flash", Some("test-key".to_string()), 60);
         assert!(client.is_ok());
-        
+
         let client = client.unwrap();
         assert_eq!(client.get_model_name(), "gemini-2.5-flash");
     }
@@ -1237,8 +1149,7 @@ mod tests {
     #[test]
     fn test_gemini_response_parsing() {
         let response = "Risk Level: HIGH\nThis script contains potential vulnerabilities including command injection.";
-        let (risk_level, summary, confidence) =
-            GeminiClient::parse_analysis_response(response);
+        let (risk_level, summary, confidence) = GeminiClient::parse_analysis_response(response);
 
         assert_eq!(risk_level, crate::models::RiskLevel::High);
         assert!(summary.contains("vulnerabilities"));

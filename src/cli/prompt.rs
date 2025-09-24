@@ -279,6 +279,48 @@ impl UserPrompter {
             io::stdout().flush().unwrap_or(());
         }
     }
+
+    pub fn display_step(&self, step_num: usize, total_steps: usize, message: &str) {
+        let (color_start, color_end) = if self.use_colors {
+            ("\x1b[1m\x1b[34m", "\x1b[0m")
+        } else {
+            ("", "")
+        };
+
+        eprintln!(
+            "{}[{}/{}]{} {}",
+            color_start,
+            step_num,
+            total_steps,
+            color_end,
+            message
+        );
+    }
+
+    pub fn display_spinner_start(&self, message: &str) {
+        if self.use_colors {
+            eprint!("\x1b[33m⏳ {}\x1b[0m", message);
+        } else {
+            eprint!("⏳ {}", message);
+        }
+        io::stderr().flush().unwrap_or(());
+    }
+
+    pub fn display_spinner_end(&self, success: bool) {
+        if success {
+            if self.use_colors {
+                eprintln!(" \x1b[32m✓\x1b[0m");
+            } else {
+                eprintln!(" ✓");
+            }
+        } else {
+            if self.use_colors {
+                eprintln!(" \x1b[31m✗\x1b[0m");
+            } else {
+                eprintln!(" ✗");
+            }
+        }
+    }
 }
 
 // Convenience functions for common prompting scenarios

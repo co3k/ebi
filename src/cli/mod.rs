@@ -23,17 +23,22 @@ impl CliHandler {
     }
 
     pub async fn run(&self) -> Result<i32, EbiError> {
+        // Create a progress reporter
+        let progress = UserPrompter::new(None, self.cli.should_use_color(), self.cli.get_output_language()?);
+
         // Step 1: Read script from stdin
+        progress.display_step(1, 7, "Reading script from stdin...");
         let script_content = self.read_stdin()?;
         if script_content.trim().is_empty() {
             return Err(EbiError::NoInput);
         }
 
         if self.cli.is_verbose() {
-            eprintln!("📥 Read {} bytes from stdin", script_content.len());
+            eprintln!("  📥 Read {} bytes from stdin", script_content.len());
         }
 
         // Step 2: Create script and detect language
+        progress.display_step(2, 7, "Detecting script language...");
         let mut script = Script::new(script_content, ScriptSource::Stdin);
         script.detect_language(
             self.cli.lang.as_deref(),
@@ -41,7 +46,7 @@ impl CliHandler {
         )?;
 
         if self.cli.is_verbose() {
-            eprintln!("🔍 Detected language: {}", script.language.as_str());
+            eprintln!("  🔍 Detected language: {}", script.language.as_str());
         }
 
         if self.cli.is_debug() {
@@ -50,11 +55,12 @@ impl CliHandler {
         }
 
         // Step 3: Parse script components using integrated parser
+        progress.display_step(3, 7, "Parsing script structure and extracting components...");
         let components = self.parse_script_components(&script).await?;
 
         if self.cli.is_verbose() {
             eprintln!(
-                "🔧 Extracted {} comments, {} string literals, {} priority nodes",
+                "  🔧 Extracted {} comments, {} string literals, {} priority nodes",
                 components.comments.len(),
                 components.string_literals.len(),
                 components.metadata.priority_nodes.len()
@@ -62,13 +68,26 @@ impl CliHandler {
         }
 
         // Step 4: Perform LLM analysis using integrated analyzer
-        let analysis_report = self.analyze_script(&script, &components).await?;
+        progress.display_step(4, 7, &format!("Analyzing with {} (this may take a while)...", self.cli.get_llm_model()));
+        progress.display_spinner_start("Waiting for LLM response");
+        let analysis_report = match self.analyze_script(&script, &components).await {
+            Ok(report) => {
+                progress.display_spinner_end(true);
+                report
+            }
+            Err(e) => {
+                progress.display_spinner_end(false);
+                return Err(e);
+            }
+        };
 
         // Step 5: Display analysis report using integrated formatter
+        progress.display_step(5, 7, "Generating security analysis report...");
         let formatter = ReportFormatter::new(&self.cli)?;
         println!("{}", formatter.format_analysis_report(&analysis_report));
 
         // Step 6: Check if execution is blocked
+        progress.display_step(6, 7, "Evaluating security risks...");
         if analysis_report.should_block_execution() {
             if self.cli.is_verbose() {
                 eprintln!("❌ Execution blocked due to security concerns");
@@ -77,6 +96,7 @@ impl CliHandler {
         }
 
         // Step 7: Get user decision using integrated prompter
+        progress.display_step(7, 7, "Awaiting user decision...");
         let prompter = UserPrompter::for_cli(&self.cli)?;
         let decision = match prompter.prompt_execution_decision(&analysis_report) {
             Ok(decision) => decision,
@@ -96,10 +116,8 @@ impl CliHandler {
             return Ok(1); // Exit code 1 for user decline
         }
 
-        // Step 8: Execute script
-        if self.cli.is_verbose() {
-            eprintln!("✅ User approved - executing script");
-        }
+        // Execute script (no step number as we're done with analysis)
+        eprintln!("✅ User approved - executing script");
 
         let exit_code = self.execute_script(&script, &decision).await?;
         Ok(exit_code)

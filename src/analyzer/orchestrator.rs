@@ -75,12 +75,14 @@ impl AnalysisOrchestrator {
         }
 
         // Execute initial requests in parallel with concurrency limit
+        eprintln!("  ⚡ Running initial security analysis...");
         let initial_results = self.execute_parallel_analysis(requests).await?;
 
         // Check if we need detailed analysis for high-risk findings
         let needs_detailed_analysis = self.should_perform_detailed_analysis(&initial_results, components);
 
         if needs_detailed_analysis {
+            eprintln!("  ⚠️  High-risk patterns detected - performing detailed analysis...");
             let detailed_results = self.perform_detailed_analysis(
                 &initial_results,
                 components,
@@ -93,8 +95,10 @@ impl AnalysisOrchestrator {
             // Combine initial and detailed results
             let mut combined_results = initial_results;
             combined_results.extend(detailed_results);
+            eprintln!("  ✅ Analysis complete ({} total findings)", combined_results.len());
             Ok(combined_results)
         } else {
+            eprintln!("  ✅ Analysis complete ({} findings)", initial_results.len());
             Ok(initial_results)
         }
     }

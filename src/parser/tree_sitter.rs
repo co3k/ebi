@@ -1,5 +1,5 @@
-use crate::models::{Language, ScriptComponents};
 use crate::error::EbiError;
+use crate::models::{Language, ScriptComponents};
 use std::time::Instant;
 
 // Placeholder tree-sitter structures since we don't have actual grammars
@@ -104,9 +104,13 @@ impl TreeSitterParser {
             if let Some(comment_start) = trimmed.find('#') {
                 // Ensure it's not in a string (basic check)
                 let before_hash = &trimmed[..comment_start];
-                let quote_count = before_hash.chars().filter(|&c| c == '"' || c == '\'').count();
+                let quote_count = before_hash
+                    .chars()
+                    .filter(|&c| c == '"' || c == '\'')
+                    .count();
 
-                if quote_count % 2 == 0 { // Even number of quotes means we're not inside a string
+                if quote_count % 2 == 0 {
+                    // Even number of quotes means we're not inside a string
                     let comment = trimmed[comment_start..].to_string();
                     components.add_comment(comment);
                 }
@@ -143,7 +147,10 @@ impl TreeSitterParser {
             .map(|line| {
                 if let Some(comment_pos) = line.find('#') {
                     let before_hash = &line[..comment_pos];
-                    let quote_count = before_hash.chars().filter(|&c| c == '"' || c == '\'').count();
+                    let quote_count = before_hash
+                        .chars()
+                        .filter(|&c| c == '"' || c == '\'')
+                        .count();
                     if quote_count % 2 == 0 {
                         line[..comment_pos].trim_end().to_string()
                     } else {

@@ -1,10 +1,10 @@
-use serde::{Deserialize, Serialize};
-use std::time::SystemTime;
-use std::fmt;
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
 use crate::models::analysis::{AnalysisResult, RiskLevel};
 use crate::models::script::Language;
+use serde::{Deserialize, Serialize};
+use std::collections::hash_map::DefaultHasher;
+use std::fmt;
+use std::hash::{Hash, Hasher};
+use std::time::SystemTime;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AnalysisReport {
@@ -30,10 +30,10 @@ pub struct ScriptInfo {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ExecutionRecommendation {
-    Safe,           // Low risk, likely safe
-    Caution,        // Medium risk, review carefully
-    Dangerous,      // High risk, not recommended
-    Blocked,        // Critical risk or analysis failure
+    Safe,      // Low risk, likely safe
+    Caution,   // Medium risk, review carefully
+    Dangerous, // High risk, not recommended
+    Blocked,   // Critical risk or analysis failure
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -42,7 +42,6 @@ pub struct ExecutionDecision {
     pub timestamp: SystemTime,
     pub analysis_report_hash: String, // For audit trail
 }
-
 
 impl AnalysisReport {
     pub fn new(script_info: ScriptInfo) -> Self {
@@ -105,7 +104,10 @@ impl AnalysisReport {
     }
 
     pub fn should_block_execution(&self) -> bool {
-        matches!(self.execution_recommendation, ExecutionRecommendation::Blocked)
+        matches!(
+            self.execution_recommendation,
+            ExecutionRecommendation::Blocked
+        )
     }
 
     pub fn has_analysis_results(&self) -> bool {
@@ -141,8 +143,7 @@ impl AnalysisReport {
 
         summary.push_str(&format!(
             "Size: {} bytes, {} lines\n",
-            self.script_info.size_bytes,
-            self.script_info.line_count
+            self.script_info.size_bytes, self.script_info.line_count
         ));
 
         summary.push_str(&format!("Risk Level: {}\n", self.overall_risk.as_str()));
@@ -211,7 +212,9 @@ impl ExecutionRecommendation {
             ExecutionRecommendation::Safe => "Low risk, likely safe to execute",
             ExecutionRecommendation::Caution => "Medium risk, review carefully before executing",
             ExecutionRecommendation::Dangerous => "High risk, execution not recommended",
-            ExecutionRecommendation::Blocked => "Critical risk or analysis failure, execution blocked",
+            ExecutionRecommendation::Blocked => {
+                "Critical risk or analysis failure, execution blocked"
+            }
         }
     }
 
@@ -231,7 +234,11 @@ impl ExecutionDecision {
         // Create a simple hash of the report for audit trail
         let mut hasher = DefaultHasher::new();
         analysis_report.overall_risk.as_str().hash(&mut hasher);
-        analysis_report.script_info.language.as_str().hash(&mut hasher);
+        analysis_report
+            .script_info
+            .language
+            .as_str()
+            .hash(&mut hasher);
         analysis_report.script_info.size_bytes.hash(&mut hasher);
         analysis_report.script_info.line_count.hash(&mut hasher);
         if !analysis_report.analysis_summary.is_empty() {
@@ -264,16 +271,24 @@ impl ExecutionDecision {
     }
 }
 
-
 impl std::fmt::Display for AnalysisReport {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "═══════════════════════════════════════════════════════════\n")?;
+        write!(
+            f,
+            "═══════════════════════════════════════════════════════════\n"
+        )?;
         write!(f, " EBI SECURITY ANALYSIS REPORT\n")?;
-        write!(f, "═══════════════════════════════════════════════════════════\n\n")?;
+        write!(
+            f,
+            "═══════════════════════════════════════════════════════════\n\n"
+        )?;
 
         write!(f, "{}", self.generate_summary())?;
 
-        write!(f, "\n═══════════════════════════════════════════════════════════\n")?;
+        write!(
+            f,
+            "\n═══════════════════════════════════════════════════════════\n"
+        )?;
 
         if self.should_block_execution() {
             write!(f, "❌ EXECUTION BLOCKED DUE TO SECURITY CONCERNS\n")?;
@@ -297,7 +312,10 @@ mod tests {
         let report = AnalysisReport::new(script_info);
 
         assert_eq!(report.overall_risk, RiskLevel::None);
-        assert_eq!(report.execution_recommendation, ExecutionRecommendation::Safe);
+        assert_eq!(
+            report.execution_recommendation,
+            ExecutionRecommendation::Safe
+        );
         assert!(!report.has_analysis_results());
     }
 
@@ -307,28 +325,30 @@ mod tests {
         let mut report = AnalysisReport::new(script_info);
 
         // Add medium risk code analysis
-        let code_analysis = AnalysisResult::new(
-            AnalysisType::CodeVulnerability,
-            "gpt-4".to_string(),
-            1000,
-        ).with_risk_level(RiskLevel::Medium);
+        let code_analysis =
+            AnalysisResult::new(AnalysisType::CodeVulnerability, "gpt-4".to_string(), 1000)
+                .with_risk_level(RiskLevel::Medium);
 
         report = report.with_code_analysis(code_analysis);
 
         assert_eq!(report.overall_risk, RiskLevel::Medium);
-        assert_eq!(report.execution_recommendation, ExecutionRecommendation::Caution);
+        assert_eq!(
+            report.execution_recommendation,
+            ExecutionRecommendation::Caution
+        );
 
         // Add high risk injection analysis - should override
-        let injection_analysis = AnalysisResult::new(
-            AnalysisType::InjectionDetection,
-            "gpt-4".to_string(),
-            800,
-        ).with_risk_level(RiskLevel::High);
+        let injection_analysis =
+            AnalysisResult::new(AnalysisType::InjectionDetection, "gpt-4".to_string(), 800)
+                .with_risk_level(RiskLevel::High);
 
         report = report.with_injection_analysis(injection_analysis);
 
         assert_eq!(report.overall_risk, RiskLevel::High);
-        assert_eq!(report.execution_recommendation, ExecutionRecommendation::Dangerous);
+        assert_eq!(
+            report.execution_recommendation,
+            ExecutionRecommendation::Dangerous
+        );
     }
 
     #[test]

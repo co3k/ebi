@@ -1,5 +1,5 @@
-use crate::models::Language;
 use crate::error::EbiError;
+use crate::models::Language;
 
 #[derive(Debug, Clone)]
 pub struct ShebangInfo {
@@ -101,15 +101,18 @@ impl ShebangParser {
         if let Some(shebang) = Self::parse(content) {
             // Basic validation - ensure the interpreter path looks reasonable
             if shebang.full_path.is_empty() {
-                return Err(EbiError::ParseError("Empty shebang interpreter".to_string()));
+                return Err(EbiError::ParseError(
+                    "Empty shebang interpreter".to_string(),
+                ));
             }
 
             // Check for potentially dangerous interpreters
             let dangerous_interpreters = ["rm", "dd", "mkfs", "fdisk"];
             if dangerous_interpreters.contains(&shebang.interpreter.as_str()) {
-                return Err(EbiError::ParseError(
-                    format!("Potentially dangerous interpreter in shebang: {}", shebang.interpreter)
-                ));
+                return Err(EbiError::ParseError(format!(
+                    "Potentially dangerous interpreter in shebang: {}",
+                    shebang.interpreter
+                )));
             }
         }
 

@@ -1,6 +1,6 @@
-use crate::models::{Script, ExecutionDecision};
-use crate::executor::ExecutionConfig;
 use crate::error::EbiError;
+use crate::executor::ExecutionConfig;
+use crate::models::{ExecutionDecision, Script};
 use std::process::Stdio;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
@@ -43,17 +43,18 @@ impl ScriptRunner {
         }
 
         // Spawn the command
-        let mut child = command.spawn()
-            .map_err(|_| EbiError::CommandNotFound {
-                command: self.config.target_command.clone(),
-            })?;
+        let mut child = command.spawn().map_err(|_| EbiError::CommandNotFound {
+            command: self.config.target_command.clone(),
+        })?;
 
         // Write script content to stdin
         if let Some(mut stdin) = child.stdin.take() {
             stdin
                 .write_all(script.content.as_bytes())
                 .await
-                .map_err(|e| EbiError::ExecutionFailed(format!("Failed to write to stdin: {}", e)))?;
+                .map_err(|e| {
+                    EbiError::ExecutionFailed(format!("Failed to write to stdin: {}", e))
+                })?;
             // Close stdin to signal EOF
         }
 
@@ -73,9 +74,10 @@ impl ScriptRunner {
                     }
                     // Await process termination after sending kill signal
                     let _ = child.wait().await;
-                    return Err(EbiError::ExecutionFailed(
-                        format!("Script execution timed out after {} seconds", timeout_secs)
-                    ));
+                    return Err(EbiError::ExecutionFailed(format!(
+                        "Script execution timed out after {} seconds",
+                        timeout_secs
+                    )));
                 }
             }
         } else {
@@ -99,7 +101,9 @@ impl ScriptRunner {
         // Future implementation: Set up sandbox environment
         // For now, just validate that we can execute
         if self.config.target_command.is_empty() {
-            return Err(EbiError::InvalidArguments("Target command is empty".to_string()));
+            return Err(EbiError::InvalidArguments(
+                "Target command is empty".to_string(),
+            ));
         }
         Ok(())
     }
@@ -111,11 +115,7 @@ mod tests {
 
     #[test]
     fn test_runner_creation() {
-        let config = ExecutionConfig::new(
-            "bash".to_string(),
-            vec![],
-            "echo test".to_string(),
-        );
+        let config = ExecutionConfig::new("bash".to_string(), vec![], "echo test".to_string());
         let runner = ScriptRunner::new(config);
         assert!(runner.timeout_seconds.is_none());
 
@@ -125,11 +125,7 @@ mod tests {
 
     #[test]
     fn test_validate_decision() {
-        let config = ExecutionConfig::new(
-            "bash".to_string(),
-            vec![],
-            "echo test".to_string(),
-        );
+        let config = ExecutionConfig::new("bash".to_string(), vec![], "echo test".to_string());
         let runner = ScriptRunner::new(config);
 
         let proceed_decision = ExecutionDecision::proceed();
@@ -141,19 +137,11 @@ mod tests {
 
     #[test]
     fn test_prepare_sandbox() {
-        let config = ExecutionConfig::new(
-            "bash".to_string(),
-            vec![],
-            "echo test".to_string(),
-        );
+        let config = ExecutionConfig::new("bash".to_string(), vec![], "echo test".to_string());
         let runner = ScriptRunner::new(config);
         assert!(runner.prepare_sandbox().is_ok());
 
-        let empty_config = ExecutionConfig::new(
-            "".to_string(),
-            vec![],
-            "echo test".to_string(),
-        );
+        let empty_config = ExecutionConfig::new("".to_string(), vec![], "echo test".to_string());
         let empty_runner = ScriptRunner::new(empty_config);
         assert!(empty_runner.prepare_sandbox().is_err());
     }

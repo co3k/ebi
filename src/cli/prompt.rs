@@ -1,6 +1,6 @@
-use crate::models::{AnalysisReport, ExecutionDecision, RiskLevel, OutputLanguage};
-use crate::localization::locale::LocalizedMessages;
 use crate::error::EbiError;
+use crate::localization::locale::LocalizedMessages;
+use crate::models::{AnalysisReport, ExecutionDecision, OutputLanguage, RiskLevel};
 use std::io::{self, Write};
 use std::time::{Duration, Instant};
 
@@ -11,7 +11,11 @@ pub struct UserPrompter {
 }
 
 impl UserPrompter {
-    pub fn new(timeout_seconds: Option<u64>, use_colors: bool, output_language: OutputLanguage) -> Self {
+    pub fn new(
+        timeout_seconds: Option<u64>,
+        use_colors: bool,
+        output_language: OutputLanguage,
+    ) -> Self {
         Self {
             timeout: timeout_seconds.map(Duration::from_secs),
             use_colors,
@@ -42,15 +46,16 @@ impl UserPrompter {
         let (color_start, color_end) = if self.use_colors {
             match report.overall_risk {
                 RiskLevel::Critical | RiskLevel::High => ("\x1b[1m\x1b[33m", "\x1b[0m"), // Yellow
-                RiskLevel::Medium => ("\x1b[1m\x1b[35m", "\x1b[0m"), // Magenta
-                _ => ("\x1b[1m\x1b[36m", "\x1b[0m"), // Cyan
+                RiskLevel::Medium => ("\x1b[1m\x1b[35m", "\x1b[0m"),                     // Magenta
+                _ => ("\x1b[1m\x1b[36m", "\x1b[0m"),                                     // Cyan
             }
         } else {
             ("", "")
         };
 
         // Display prompt based on risk level
-        let prompt_message = LocalizedMessages::get_prompt_message(&report.overall_risk, &self.output_language);
+        let prompt_message =
+            LocalizedMessages::get_prompt_message(&report.overall_risk, &self.output_language);
 
         print!("\n{}{}{}\n\n", color_start, prompt_message, color_end);
 
@@ -71,16 +76,17 @@ impl UserPrompter {
         }
 
         // Show the actual prompt
-        let prompt_text = LocalizedMessages::get_prompt_text(&report.overall_risk, &self.output_language);
+        let prompt_text =
+            LocalizedMessages::get_prompt_text(&report.overall_risk, &self.output_language);
         print!("{}", prompt_text);
 
         // Flush to ensure prompt is displayed
-        io::stdout().flush()
+        io::stdout()
+            .flush()
             .map_err(|_| EbiError::UserInputTimeout)?;
 
         Ok(())
     }
-
 
     fn get_user_input(&self) -> Result<String, EbiError> {
         if let Some(timeout_duration) = self.timeout {
@@ -134,10 +140,10 @@ impl UserPrompter {
     }
 
     fn get_user_input_with_timeout(&self, timeout: Duration) -> Result<String, EbiError> {
-        use std::sync::mpsc;
-        use std::thread;
         use std::fs::File;
         use std::io::Read;
+        use std::sync::mpsc;
+        use std::thread;
 
         let (sender, receiver) = mpsc::channel();
         let start_time = Instant::now();
@@ -213,12 +219,8 @@ impl UserPrompter {
 
     fn parse_execution_response(&self, response: &str) -> Result<ExecutionDecision, EbiError> {
         match response {
-            "yes" | "y" | "execute" | "proceed" => {
-                Ok(ExecutionDecision::proceed())
-            }
-            "no" | "n" | "cancel" | "abort" | "stop" => {
-                Ok(ExecutionDecision::decline())
-            }
+            "yes" | "y" | "execute" | "proceed" => Ok(ExecutionDecision::proceed()),
+            "no" | "n" | "cancel" | "abort" | "stop" => Ok(ExecutionDecision::decline()),
             "review" | "details" | "show" | "more" => {
                 // For now, treat review as decline - in a full implementation,
                 // this would show detailed analysis and prompt again
@@ -231,7 +233,9 @@ impl UserPrompter {
             }
             _ => {
                 // Invalid response - ask again (with a retry limit)
-                println!("❓ Please enter 'yes' to execute, 'no' to cancel, or 'review' for details.");
+                println!(
+                    "❓ Please enter 'yes' to execute, 'no' to cancel, or 'review' for details."
+                );
                 print!("Your choice: ");
                 io::stdout().flush().unwrap_or(());
 
@@ -243,7 +247,8 @@ impl UserPrompter {
 
     pub fn prompt_confirmation(&self, message: &str) -> Result<bool, EbiError> {
         print!("{} (y/n): ", message);
-        io::stdout().flush()
+        io::stdout()
+            .flush()
             .map_err(|_| EbiError::UserInputTimeout)?;
 
         let response = self.get_user_input()?;
@@ -289,11 +294,7 @@ impl UserPrompter {
 
         eprintln!(
             "{}[{}/{}]{} {}",
-            color_start,
-            step_num,
-            total_steps,
-            color_end,
-            message
+            color_start, step_num, total_steps, color_end, message
         );
     }
 
@@ -337,10 +338,13 @@ impl UserPrompter {
             .and_then(|value| value.parse::<u64>().ok())
             .map(|value| value.clamp(10, 900));
 
-        let prompt_timeout = env_timeout
-            .unwrap_or_else(|| cli.get_timeout_seconds().min(300));
+        let prompt_timeout = env_timeout.unwrap_or_else(|| cli.get_timeout_seconds().min(300));
 
-        Ok(Self::new(Some(prompt_timeout), cli.should_use_color(), output_language))
+        Ok(Self::new(
+            Some(prompt_timeout),
+            cli.should_use_color(),
+            output_language,
+        ))
     }
 
     pub fn for_testing() -> Self {
@@ -355,7 +359,7 @@ impl UserPrompter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::{ScriptInfo, Language};
+    use crate::models::{Language, ScriptInfo};
     use clap::Parser;
 
     #[test]
@@ -365,7 +369,12 @@ mod tests {
         // Test yes responses
         assert!(prompter.parse_execution_response("yes").unwrap().proceed);
         assert!(prompter.parse_execution_response("y").unwrap().proceed);
-        assert!(prompter.parse_execution_response("execute").unwrap().proceed);
+        assert!(
+            prompter
+                .parse_execution_response("execute")
+                .unwrap()
+                .proceed
+        );
 
         // Test no responses
         assert!(!prompter.parse_execution_response("no").unwrap().proceed);
@@ -381,13 +390,16 @@ mod tests {
 
     #[test]
     fn test_prompt_text_generation() {
-        let high_risk_prompt = LocalizedMessages::get_prompt_text(&RiskLevel::High, &OutputLanguage::English);
+        let high_risk_prompt =
+            LocalizedMessages::get_prompt_text(&RiskLevel::High, &OutputLanguage::English);
         assert!(high_risk_prompt.contains("HIGH RISK"));
 
-        let medium_risk_prompt = LocalizedMessages::get_prompt_text(&RiskLevel::Medium, &OutputLanguage::English);
+        let medium_risk_prompt =
+            LocalizedMessages::get_prompt_text(&RiskLevel::Medium, &OutputLanguage::English);
         assert!(medium_risk_prompt.contains("proceed with execution"));
 
-        let low_risk_prompt = LocalizedMessages::get_prompt_text(&RiskLevel::Low, &OutputLanguage::English);
+        let low_risk_prompt =
+            LocalizedMessages::get_prompt_text(&RiskLevel::Low, &OutputLanguage::English);
         assert!(low_risk_prompt.contains("yes"));
     }
 

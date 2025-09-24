@@ -1,5 +1,5 @@
-use crate::models::Language;
 use crate::error::EbiError;
+use crate::models::Language;
 use std::path::Path;
 
 pub struct LanguageDetector;
@@ -98,26 +98,35 @@ impl LanguageDetector {
             let trimmed = line.trim();
 
             // Bash indicators
-            if trimmed.starts_with("export ") ||
-               trimmed.contains("$") && (trimmed.contains("{") || trimmed.contains("(")) ||
-               trimmed.contains("[[") || trimmed.contains("]]") ||
-               trimmed.starts_with("if [") || trimmed.starts_with("while [") ||
-               trimmed.contains(">&") || trimmed.contains("2>&1") ||
-               trimmed.starts_with("function ") ||
-               trimmed.contains(" && ") || trimmed.contains(" || ") {
+            if trimmed.starts_with("export ")
+                || trimmed.contains("$") && (trimmed.contains("{") || trimmed.contains("("))
+                || trimmed.contains("[[")
+                || trimmed.contains("]]")
+                || trimmed.starts_with("if [")
+                || trimmed.starts_with("while [")
+                || trimmed.contains(">&")
+                || trimmed.contains("2>&1")
+                || trimmed.starts_with("function ")
+                || trimmed.contains(" && ")
+                || trimmed.contains(" || ")
+            {
                 bash_score += 1;
             }
 
             // Python indicators
-            if trimmed.starts_with("def ") || trimmed.starts_with("class ") ||
-               trimmed.starts_with("import ") || trimmed.starts_with("from ") ||
-               trimmed.contains("if __name__ == '__main__'") ||
-               trimmed.contains("print(") ||
-               trimmed.ends_with(":") && (trimmed.starts_with("if ") ||
-                                         trimmed.starts_with("for ") ||
-                                         trimmed.starts_with("while ") ||
-                                         trimmed.starts_with("try:") ||
-                                         trimmed.starts_with("except ")) {
+            if trimmed.starts_with("def ")
+                || trimmed.starts_with("class ")
+                || trimmed.starts_with("import ")
+                || trimmed.starts_with("from ")
+                || trimmed.contains("if __name__ == '__main__'")
+                || trimmed.contains("print(")
+                || trimmed.ends_with(":")
+                    && (trimmed.starts_with("if ")
+                        || trimmed.starts_with("for ")
+                        || trimmed.starts_with("while ")
+                        || trimmed.starts_with("try:")
+                        || trimmed.starts_with("except "))
+            {
                 python_score += 1;
             }
         }

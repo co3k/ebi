@@ -1,10 +1,10 @@
-use serde::{Deserialize, Serialize};
 use crate::models::script::Language;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ScriptComponents {
-    pub code_body: String,         // Code with comments/literals removed
-    pub comments: Vec<String>,      // All extracted comments
+    pub code_body: String,            // Code with comments/literals removed
+    pub comments: Vec<String>,        // All extracted comments
     pub string_literals: Vec<String>, // All extracted string literals
     pub metadata: ParseMetadata,
 }
@@ -28,10 +28,10 @@ pub struct NodeInfo {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum SecurityRelevance {
-    Critical,  // exec, eval, system calls
-    High,      // file I/O, network
-    Medium,    // env vars, subprocess
-    Low,       // regular code
+    Critical, // exec, eval, system calls
+    High,     // file I/O, network
+    Medium,   // env vars, subprocess
+    Low,      // regular code
 }
 
 impl ScriptComponents {
@@ -96,7 +96,9 @@ impl ScriptComponents {
     pub fn add_command_substitution(&mut self, command: String) {
         // Extract line number from command if possible
         let line = if command.starts_with("Line ") {
-            command[5..].split(':').next()
+            command[5..]
+                .split(':')
+                .next()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(1)
         } else {
@@ -132,9 +134,9 @@ impl ScriptComponents {
     }
 
     pub fn has_content(&self) -> bool {
-        !self.code_body.trim().is_empty() ||
-        !self.comments.is_empty() ||
-        !self.string_literals.is_empty()
+        !self.code_body.trim().is_empty()
+            || !self.comments.is_empty()
+            || !self.string_literals.is_empty()
     }
 
     pub fn total_extracted_items(&self) -> usize {
@@ -142,24 +144,32 @@ impl ScriptComponents {
     }
 
     pub fn get_critical_nodes(&self) -> Vec<&NodeInfo> {
-        self.metadata.priority_nodes
+        self.metadata
+            .priority_nodes
             .iter()
             .filter(|node| matches!(node.security_relevance, SecurityRelevance::Critical))
             .collect()
     }
 
     pub fn get_high_risk_nodes(&self) -> Vec<&NodeInfo> {
-        self.metadata.priority_nodes
+        self.metadata
+            .priority_nodes
             .iter()
-            .filter(|node| matches!(
-                node.security_relevance,
-                SecurityRelevance::Critical | SecurityRelevance::High
-            ))
+            .filter(|node| {
+                matches!(
+                    node.security_relevance,
+                    SecurityRelevance::Critical | SecurityRelevance::High
+                )
+            })
             .collect()
     }
 
     /// Get a string representation suitable for LLM analysis
-    pub fn get_analysis_content(&self, language: &Language, include_priority_nodes: bool) -> String {
+    pub fn get_analysis_content(
+        &self,
+        language: &Language,
+        include_priority_nodes: bool,
+    ) -> String {
         let mut content = String::new();
 
         // Add language context
@@ -263,7 +273,9 @@ impl SecurityRelevance {
     pub fn from_node_type(node_type: &str) -> Self {
         match node_type.to_lowercase().as_str() {
             // Critical operations
-            "command_substitution" | "process_substitution" | "eval" | "exec" => SecurityRelevance::Critical,
+            "command_substitution" | "process_substitution" | "eval" | "exec" => {
+                SecurityRelevance::Critical
+            }
 
             // High risk operations
             "file_redirect" | "pipe" | "curl" | "wget" | "ssh" | "scp" => SecurityRelevance::High,
@@ -326,16 +338,34 @@ mod tests {
         });
 
         // Critical should come first
-        assert_eq!(components.metadata.priority_nodes[0].security_relevance, SecurityRelevance::Critical);
-        assert_eq!(components.metadata.priority_nodes[1].security_relevance, SecurityRelevance::Low);
+        assert_eq!(
+            components.metadata.priority_nodes[0].security_relevance,
+            SecurityRelevance::Critical
+        );
+        assert_eq!(
+            components.metadata.priority_nodes[1].security_relevance,
+            SecurityRelevance::Low
+        );
     }
 
     #[test]
     fn test_security_relevance_from_node_type() {
-        assert_eq!(SecurityRelevance::from_node_type("eval"), SecurityRelevance::Critical);
-        assert_eq!(SecurityRelevance::from_node_type("curl"), SecurityRelevance::High);
-        assert_eq!(SecurityRelevance::from_node_type("export"), SecurityRelevance::Medium);
-        assert_eq!(SecurityRelevance::from_node_type("echo"), SecurityRelevance::Low);
+        assert_eq!(
+            SecurityRelevance::from_node_type("eval"),
+            SecurityRelevance::Critical
+        );
+        assert_eq!(
+            SecurityRelevance::from_node_type("curl"),
+            SecurityRelevance::High
+        );
+        assert_eq!(
+            SecurityRelevance::from_node_type("export"),
+            SecurityRelevance::Medium
+        );
+        assert_eq!(
+            SecurityRelevance::from_node_type("echo"),
+            SecurityRelevance::Low
+        );
     }
 
     #[test]

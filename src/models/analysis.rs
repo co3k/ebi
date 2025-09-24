@@ -1,5 +1,5 @@
-use serde::{Deserialize, Serialize};
 use crate::models::{Language, OutputLanguage};
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AnalysisRequest {
@@ -13,9 +13,9 @@ pub struct AnalysisRequest {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum AnalysisType {
-    InjectionDetection,  // For comments/strings
-    CodeVulnerability,   // For code body
-    DetailedRiskAnalysis, // Comprehensive risk breakdown for high-risk scripts
+    InjectionDetection,     // For comments/strings
+    CodeVulnerability,      // For code body
+    DetailedRiskAnalysis,   // Comprehensive risk breakdown for high-risk scripts
     SpecificThreatAnalysis, // Line-by-line threat analysis
 }
 
@@ -120,11 +120,7 @@ impl AnalysisRequest {
 }
 
 impl AnalysisResult {
-    pub fn new(
-        analysis_type: AnalysisType,
-        model_used: String,
-        analysis_duration_ms: u64,
-    ) -> Self {
+    pub fn new(analysis_type: AnalysisType, model_used: String, analysis_duration_ms: u64) -> Self {
         Self {
             analysis_type,
             risk_level: RiskLevel::None,
@@ -166,10 +162,9 @@ impl AnalysisResult {
     }
 
     pub fn has_high_risk_findings(&self) -> bool {
-        self.findings.iter().any(|f| matches!(
-            f.severity,
-            RiskLevel::High | RiskLevel::Critical
-        ))
+        self.findings
+            .iter()
+            .any(|f| matches!(f.severity, RiskLevel::High | RiskLevel::Critical))
     }
 
     pub fn is_valid(&self) -> bool {
@@ -250,7 +245,9 @@ impl AnalysisType {
         match self {
             AnalysisType::InjectionDetection => "Prompt injection and hidden instruction analysis",
             AnalysisType::CodeVulnerability => "Code vulnerability and security analysis",
-            AnalysisType::DetailedRiskAnalysis => "Comprehensive risk breakdown for high-risk scripts",
+            AnalysisType::DetailedRiskAnalysis => {
+                "Comprehensive risk breakdown for high-risk scripts"
+            }
             AnalysisType::SpecificThreatAnalysis => "Line-by-line threat analysis",
         }
     }
@@ -301,11 +298,8 @@ mod tests {
 
     #[test]
     fn test_analysis_result_risk_level_update() {
-        let mut result = AnalysisResult::new(
-            AnalysisType::CodeVulnerability,
-            "gpt-4".to_string(),
-            1000,
-        );
+        let mut result =
+            AnalysisResult::new(AnalysisType::CodeVulnerability, "gpt-4".to_string(), 1000);
 
         // Start with no risk
         assert_eq!(result.risk_level, RiskLevel::None);
@@ -318,10 +312,7 @@ mod tests {
         assert_eq!(result.risk_level, RiskLevel::Medium);
 
         // Add a high risk finding - should update overall risk
-        result.add_finding(Finding::new(
-            "Serious issue".to_string(),
-            RiskLevel::High,
-        ));
+        result.add_finding(Finding::new("Serious issue".to_string(), RiskLevel::High));
         assert_eq!(result.risk_level, RiskLevel::High);
 
         assert!(result.has_high_risk_findings());

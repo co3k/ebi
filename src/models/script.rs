@@ -1,7 +1,7 @@
+use crate::error::EbiError;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::path::PathBuf;
-use crate::error::EbiError;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Script {
@@ -34,7 +34,10 @@ impl OutputLanguage {
         match s.to_lowercase().as_str() {
             "english" | "en" => Ok(OutputLanguage::English),
             "japanese" | "ja" | "jp" => Ok(OutputLanguage::Japanese),
-            _ => Err(EbiError::InvalidArguments(format!("Unsupported output language: {}", s))),
+            _ => Err(EbiError::InvalidArguments(format!(
+                "Unsupported output language: {}",
+                s
+            ))),
         }
     }
 
@@ -120,7 +123,11 @@ impl Script {
         self
     }
 
-    pub fn detect_language(&mut self, cli_lang: Option<&str>, command: Option<&str>) -> Result<(), EbiError> {
+    pub fn detect_language(
+        &mut self,
+        cli_lang: Option<&str>,
+        command: Option<&str>,
+    ) -> Result<(), EbiError> {
         // Priority 1: Explicit CLI flag
         if let Some(lang_str) = cli_lang {
             self.language = Language::from_str(lang_str)?;
@@ -182,7 +189,10 @@ mod tests {
     #[test]
     fn test_language_from_shebang() {
         assert_eq!(Language::from_shebang("#!/bin/bash"), Some(Language::Bash));
-        assert_eq!(Language::from_shebang("#!/usr/bin/env python3"), Some(Language::Python));
+        assert_eq!(
+            Language::from_shebang("#!/usr/bin/env python3"),
+            Some(Language::Python)
+        );
         assert_eq!(Language::from_shebang("not a shebang"), None);
     }
 
@@ -194,7 +204,9 @@ mod tests {
         );
 
         // CLI flag should take priority over shebang
-        script.detect_language(Some("bash"), Some("python3")).unwrap();
+        script
+            .detect_language(Some("bash"), Some("python3"))
+            .unwrap();
         assert_eq!(script.language, Language::Bash);
 
         // Reset and test command priority
@@ -210,11 +222,26 @@ mod tests {
 
     #[test]
     fn test_output_language_from_str() {
-        assert_eq!(OutputLanguage::from_str("english").unwrap(), OutputLanguage::English);
-        assert_eq!(OutputLanguage::from_str("en").unwrap(), OutputLanguage::English);
-        assert_eq!(OutputLanguage::from_str("japanese").unwrap(), OutputLanguage::Japanese);
-        assert_eq!(OutputLanguage::from_str("ja").unwrap(), OutputLanguage::Japanese);
-        assert_eq!(OutputLanguage::from_str("jp").unwrap(), OutputLanguage::Japanese);
+        assert_eq!(
+            OutputLanguage::from_str("english").unwrap(),
+            OutputLanguage::English
+        );
+        assert_eq!(
+            OutputLanguage::from_str("en").unwrap(),
+            OutputLanguage::English
+        );
+        assert_eq!(
+            OutputLanguage::from_str("japanese").unwrap(),
+            OutputLanguage::Japanese
+        );
+        assert_eq!(
+            OutputLanguage::from_str("ja").unwrap(),
+            OutputLanguage::Japanese
+        );
+        assert_eq!(
+            OutputLanguage::from_str("jp").unwrap(),
+            OutputLanguage::Japanese
+        );
         assert!(OutputLanguage::from_str("invalid").is_err());
     }
 

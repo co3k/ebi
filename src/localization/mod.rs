@@ -1,7 +1,7 @@
 use crate::models::OutputLanguage;
 
-pub mod strings;
 pub mod locale;
+pub mod strings;
 
 pub use locale::LocaleDetector;
 
@@ -49,22 +49,28 @@ mod tests {
     #[test]
     fn test_english_localization() {
         let localized = LocalizedStrings::new(OutputLanguage::English);
-        
+
         assert_eq!(localized.get_risk_level("critical"), "CRITICAL");
         assert_eq!(localized.get_risk_level("high"), "HIGH");
         assert_eq!(localized.get_execution_recommendation("safe"), "SAFE");
-        assert_eq!(localized.get_analysis_section("analysis_summary"), "ANALYSIS SUMMARY");
+        assert_eq!(
+            localized.get_analysis_section("analysis_summary"),
+            "ANALYSIS SUMMARY"
+        );
         assert_eq!(localized.get_message("analysis_error"), "ANALYSIS ERROR");
     }
 
     #[test]
     fn test_japanese_localization() {
         let localized = LocalizedStrings::new(OutputLanguage::Japanese);
-        
+
         assert_eq!(localized.get_risk_level("critical"), "クリティカル");
         assert_eq!(localized.get_risk_level("high"), "高");
         assert_eq!(localized.get_execution_recommendation("safe"), "安全");
-        assert_eq!(localized.get_analysis_section("analysis_summary"), "分析サマリー");
+        assert_eq!(
+            localized.get_analysis_section("analysis_summary"),
+            "分析サマリー"
+        );
         assert_eq!(localized.get_message("analysis_error"), "分析エラー");
     }
 

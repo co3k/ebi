@@ -1,6 +1,6 @@
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExecutionConfig {
@@ -152,25 +152,14 @@ mod tests {
 
     #[test]
     fn test_config_validation() {
-        let valid_config = ExecutionConfig::new(
-            "bash".to_string(),
-            vec![],
-            "echo test".to_string(),
-        );
+        let valid_config =
+            ExecutionConfig::new("bash".to_string(), vec![], "echo test".to_string());
         assert!(valid_config.validate().is_ok());
 
-        let invalid_config = ExecutionConfig::new(
-            "".to_string(),
-            vec![],
-            "echo test".to_string(),
-        );
+        let invalid_config = ExecutionConfig::new("".to_string(), vec![], "echo test".to_string());
         assert!(invalid_config.validate().is_err());
 
-        let empty_script = ExecutionConfig::new(
-            "bash".to_string(),
-            vec![],
-            "".to_string(),
-        );
+        let empty_script = ExecutionConfig::new("bash".to_string(), vec![], "".to_string());
         assert!(empty_script.validate().is_err());
     }
 
@@ -192,17 +181,17 @@ mod tests {
 
     #[test]
     fn test_config_builders() {
-        let config = ExecutionConfig::new(
-            "python".to_string(),
-            vec![],
-            "print('hello')".to_string(),
-        )
-        .with_timeout(30)
-        .with_sandbox()
-        .with_env_var("PYTHONPATH".to_string(), "/usr/lib".to_string());
+        let config =
+            ExecutionConfig::new("python".to_string(), vec![], "print('hello')".to_string())
+                .with_timeout(30)
+                .with_sandbox()
+                .with_env_var("PYTHONPATH".to_string(), "/usr/lib".to_string());
 
         assert_eq!(config.timeout_seconds, Some(30));
         assert!(config.sandbox_mode);
-        assert_eq!(config.env_vars.get("PYTHONPATH"), Some(&"/usr/lib".to_string()));
+        assert_eq!(
+            config.env_vars.get("PYTHONPATH"),
+            Some(&"/usr/lib".to_string())
+        );
     }
 }

@@ -29,46 +29,66 @@ SCRIPT CONTENT:
 ```
 
 ANALYSIS INSTRUCTIONS:
-You are a security expert analyzing this script for vulnerabilities. Focus on providing CONCRETE, ACTIONABLE findings that help users make informed decisions.
+You are a cybersecurity expert analyzing this script. Your goal is to help users make informed decisions by distinguishing between legitimate system operations and genuine security threats.
 
-CRITICAL ANALYSIS CRITERIA:
-- ONLY flag as CRITICAL if there are immediate, severe security risks (remote code execution, privilege escalation, data destruction)
-- HIGH risk for operations requiring elevated privileges or network access with potential for abuse
-- MEDIUM risk for operations that access system resources or modify files in controlled ways
-- LOW risk for standard operations with minimal security impact
-- INFO for informational findings or best practice suggestions
+CONTEXT-AWARE RISK ASSESSMENT:
+Before rating risk levels, consider the script's apparent purpose and legitimacy:
 
-SPECIFIC REQUIREMENTS:
-1. **Line-by-Line Analysis**: Reference specific line numbers (e.g., "Line 42: curl command")
-2. **Context Assessment**: Consider if this is likely a legitimate script (e.g., official installers, build scripts)
-3. **Risk Justification**: Explain WHY each finding is dangerous, not just WHAT it does
-4. **Practical Impact**: Focus on realistic attack scenarios, not theoretical vulnerabilities
-5. **False Positive Avoidance**: Don't flag standard operations as dangerous unless there's clear risk
+**LEGITIMATE SCRIPT INDICATORS:**
+- Official software installers (Homebrew, Docker, package managers)
+- Build/deployment scripts with clear purpose
+- System administration utilities
+- Scripts from trusted sources (GitHub official repos, major vendors)
+
+**CRITICAL RISK CRITERIA (only for genuinely dangerous scripts):**
+- Unexplained privilege escalation beyond script purpose
+- Suspicious network communications to unknown hosts
+- Data exfiltration or destruction patterns
+- Code obfuscation or evasion techniques
+- Remote shell establishment without clear purpose
+
+**RISK LEVEL GUIDELINES:**
+- CRITICAL: Clear malicious intent or immediate severe threats
+- HIGH: Risky operations that exceed apparent legitimate purpose
+- MEDIUM: Operations requiring caution but justified by apparent purpose
+- LOW: Standard operations with minimal risk in context
+- INFO: Best practices or informational notes
+
+REQUIRED ANALYSIS APPROACH:
+1. **Script Purpose Assessment**: Identify what this script appears to do
+2. **Legitimacy Evaluation**: Does it match expected behavior for its apparent purpose?
+3. **Specific Concerns**: List exact lines/operations that warrant attention
+4. **Risk Justification**: Explain why each finding matters in context
+5. **Actionable Guidance**: Provide specific steps to verify safety
 
 LANGUAGE-SPECIFIC GUIDANCE:
 {}
 
-OUTPUT FORMAT (BE SPECIFIC):
+OUTPUT FORMAT:
+
+SCRIPT PURPOSE: [What this script appears to be designed to do]
+
+LEGITIMACY ASSESSMENT: [Legitimate/Suspicious/Unknown] - [Brief reasoning]
 
 RISK LEVEL: [Critical/High/Medium/Low/Info]
 
-SPECIFIC VULNERABILITIES:
-Line X: [Vulnerable pattern] - [Why this is dangerous] - [Attack scenario]
-Line Y: [Another finding] - [Security implication] - [Realistic impact]
+SPECIFIC FINDINGS:
+[Only list actual concerns - if no significant issues, state "No significant security concerns identified"]
 
-SECURITY ASSESSMENT:
-[Overall evaluation considering script purpose, source, and actual risks]
+Line XXX: [Specific operation]
+→ Concern: [What makes this concerning]
+→ Context: [Why this matters for this script type]
+→ Verification: [How user can verify this is safe]
 
-ACTIONABLE RECOMMENDATIONS:
-1. [Specific action] - [Why this helps]
-2. [Another recommendation] - [Security benefit]
+OVERALL ASSESSMENT:
+[Balanced evaluation considering legitimacy and actual risks]
 
-CONFIDENCE: [High/Medium/Low] - [Reasoning for confidence level]
+RECOMMENDED ACTIONS:
+[Only if there are genuine concerns to address]
+• [Specific, actionable step with clear benefit]
+• [Another recommendation if applicable]
 
-CONTEXT CONSIDERATIONS:
-- Is this likely a legitimate script? (installer, build tool, etc.)
-- Are the risky operations justified by the script's apparent purpose?
-- What would an attacker realistically gain from this script?
+CONFIDENCE: [High/Medium/Low] - [Based on script clarity and analysis completeness]
 
 IMPORTANT: Provide all output in {} language. Be precise and helpful, not alarmist."#,
             language.as_str(),

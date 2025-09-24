@@ -304,50 +304,10 @@ impl SecurityClassifier {
         matches!(relevance, SecurityRelevance::Critical)
     }
 
-    pub fn get_risk_mitigation_suggestions(&self, nodes: &[NodeInfo]) -> Vec<String> {
-        let mut suggestions = Vec::new();
-
-        // Check for specific dangerous patterns and provide suggestions
-        for node in nodes {
-            match &node.security_relevance {
-                SecurityRelevance::Critical => {
-                    if node.node_type.contains("eval") {
-                        suggestions.push("Consider using safer alternatives to eval() such as specific parsing functions".to_string());
-                    }
-                    if node.node_type.contains("command_substitution") {
-                        suggestions.push("Review command substitution for potential injection vulnerabilities".to_string());
-                    }
-                    if node.node_type.contains("exec") {
-                        suggestions.push("exec() can execute arbitrary code - ensure input is trusted and validated".to_string());
-                    }
-                }
-                SecurityRelevance::High => {
-                    if node.node_type.contains("network") {
-                        suggestions.push("Network operations should use HTTPS and validate certificates".to_string());
-                    }
-                    if node.node_type.contains("subprocess") {
-                        suggestions.push("Avoid shell=True in subprocess calls, use argument lists instead".to_string());
-                    }
-                    if node.node_type.contains("privilege") {
-                        suggestions.push("Privilege escalation detected - ensure this is necessary and properly secured".to_string());
-                    }
-                }
-                SecurityRelevance::Medium => {
-                    if node.node_type.contains("file") {
-                        suggestions.push("File operations should validate paths and handle errors appropriately".to_string());
-                    }
-                }
-                SecurityRelevance::Low => {
-                    // No specific suggestions for low-risk operations
-                }
-            }
-        }
-
-        // Remove duplicates
-        suggestions.sort();
-        suggestions.dedup();
-
-        suggestions
+    pub fn get_risk_mitigation_suggestions(&self, _nodes: &[NodeInfo]) -> Vec<String> {
+        // Generic mitigation suggestions removed per user feedback
+        // LLM analysis provides more context-specific recommendations
+        Vec::new()
     }
 }
 

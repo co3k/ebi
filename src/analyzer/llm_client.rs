@@ -254,39 +254,102 @@ impl LlmProvider for OpenAiCompatibleClient {
 }
 
 impl OpenAiCompatibleClient {
+    fn extract_summary(response: &str) -> String {
+        // Look for explicit summary section
+        let lines: Vec<&str> = response.lines().collect();
+
+        // Try to find summary section
+        for (i, line) in lines.iter().enumerate() {
+            let line_lower = line.to_lowercase();
+            if line_lower.contains("summary:") || line_lower.contains("概要:") {
+                // Found summary header, take next few lines
+                let summary_lines: Vec<&str> = lines
+                    .iter()
+                    .skip(i + 1)
+                    .take_while(|l| !l.trim().is_empty() && !l.to_lowercase().contains("analysis:") && !l.to_lowercase().contains("分析:"))
+                    .copied()
+                    .collect();
+
+                if !summary_lines.is_empty() {
+                    return summary_lines.join("\n").trim().to_string();
+                }
+            }
+        }
+
+        // Fallback: take meaningful content (skip headers, take substantial paragraphs)
+        let meaningful_lines: Vec<&str> = lines
+            .iter()
+            .filter(|line| {
+                let line_clean = line.trim();
+                !line_clean.is_empty() &&
+                line_clean.len() > 20 &&
+                !line_clean.starts_with('#') &&
+                !line_clean.starts_with("RISK LEVEL:") &&
+                !line_clean.starts_with("CONFIDENCE:")
+            })
+            .take(5)
+            .copied()
+            .collect();
+
+        if meaningful_lines.is_empty() {
+            response.lines().take(3).collect::<Vec<_>>().join(" ").chars().take(300).collect()
+        } else {
+            meaningful_lines.join(" ").chars().take(500).collect()
+        }
+    }
+
     fn parse_analysis_response(response: &str) -> (crate::models::RiskLevel, String, f32) {
         use crate::models::RiskLevel;
 
         let response_lower = response.to_lowercase();
 
-        // Extract risk level
-        let risk_level = if response_lower.contains("critical") {
+        // Extract risk level with more precise matching
+        let risk_level = if response_lower.contains("risk level: critical") ||
+                           response_lower.contains("リスクレベル: クリティカル") ||
+                           response_lower.contains("critical risk") {
             RiskLevel::Critical
-        } else if response_lower.contains("high") {
+        } else if response_lower.contains("risk level: high") ||
+                  response_lower.contains("リスクレベル: 高") ||
+                  response_lower.contains("high risk") {
             RiskLevel::High
-        } else if response_lower.contains("medium") {
+        } else if response_lower.contains("risk level: medium") ||
+                  response_lower.contains("リスクレベル: 中") ||
+                  response_lower.contains("medium risk") {
             RiskLevel::Medium
-        } else if response_lower.contains("low") {
+        } else if response_lower.contains("risk level: low") ||
+                  response_lower.contains("リスクレベル: 低") ||
+                  response_lower.contains("low risk") {
             RiskLevel::Low
+        } else if response_lower.contains("risk level: info") ||
+                  response_lower.contains("risk level: none") ||
+                  response_lower.contains("リスクレベル: 情報") {
+            RiskLevel::Info
         } else {
-            RiskLevel::Info // Default if unclear
+            // Fallback - look for standalone keywords
+            if response_lower.contains("critical") || response_lower.contains("クリティカル") {
+                RiskLevel::Critical
+            } else if response_lower.contains("high") || response_lower.contains("高リスク") {
+                RiskLevel::High
+            } else if response_lower.contains("medium") || response_lower.contains("中リスク") {
+                RiskLevel::Medium
+            } else if response_lower.contains("low") || response_lower.contains("低リスク") {
+                RiskLevel::Low
+            } else {
+                RiskLevel::Info
+            }
         };
 
-        // Extract summary (first few sentences)
-        let summary = response
-            .lines()
-            .take(3)
-            .collect::<Vec<_>>()
-            .join(" ")
-            .chars()
-            .take(200)
-            .collect::<String>();
+        // Extract summary using improved method
+        let summary = Self::extract_summary(response);
 
         // Calculate confidence based on response quality
         let confidence = if response.len() > 100
-            && (response_lower.contains("vulnerability")
-                || response_lower.contains("risk")
-                || response_lower.contains("security"))
+            && (response_lower.contains("vulnerability") ||
+                response_lower.contains("risk") ||
+                response_lower.contains("security") ||
+                response_lower.contains("脆弱性") ||
+                response_lower.contains("リスク") ||
+                response_lower.contains("セキュリティ"))
         {
             0.85
         } else if response.len() > 50 {
@@ -526,22 +589,89 @@ impl LlmProvider for ClaudeClient {
 }
 
 impl ClaudeClient {
+    fn extract_summary(response: &str) -> String {
+        // Look for explicit summary section
+        let lines: Vec<&str> = response.lines().collect();
+
+        // Try to find summary section
+        for (i, line) in lines.iter().enumerate() {
+            let line_lower = line.to_lowercase();
+            if line_lower.contains("summary:") || line_lower.contains("概要:") {
+                // Found summary header, take next few lines
+                let summary_lines: Vec<&str> = lines
+                    .iter()
+                    .skip(i + 1)
+                    .take_while(|l| !l.trim().is_empty() && !l.to_lowercase().contains("analysis:") && !l.to_lowercase().contains("分析:"))
+                    .copied()
+                    .collect();
+
+                if !summary_lines.is_empty() {
+                    return summary_lines.join("\n").trim().to_string();
+                }
+            }
+        }
+
+        // Fallback: take meaningful content (skip headers, take substantial paragraphs)
+        let meaningful_lines: Vec<&str> = lines
+            .iter()
+            .filter(|line| {
+                let line_clean = line.trim();
+                !line_clean.is_empty() &&
+                line_clean.len() > 20 &&
+                !line_clean.starts_with('#') &&
+                !line_clean.starts_with("RISK LEVEL:") &&
+                !line_clean.starts_with("CONFIDENCE:")
+            })
+            .take(5)
+            .copied()
+            .collect();
+
+        if meaningful_lines.is_empty() {
+            response.lines().take(3).collect::<Vec<_>>().join(" ").chars().take(300).collect()
+        } else {
+            meaningful_lines.join(" ").chars().take(500).collect()
+        }
+    }
+
     fn parse_analysis_response(response: &str) -> (crate::models::RiskLevel, String, f32) {
         use crate::models::RiskLevel;
 
         let response_lower = response.to_lowercase();
 
-        // Extract risk level
-        let risk_level = if response_lower.contains("critical") {
+        // Extract risk level with more precise matching
+        let risk_level = if response_lower.contains("risk level: critical") ||
+                           response_lower.contains("リスクレベル: クリティカル") ||
+                           response_lower.contains("critical risk") {
             RiskLevel::Critical
-        } else if response_lower.contains("high") {
+        } else if response_lower.contains("risk level: high") ||
+                  response_lower.contains("リスクレベル: 高") ||
+                  response_lower.contains("high risk") {
             RiskLevel::High
-        } else if response_lower.contains("medium") {
+        } else if response_lower.contains("risk level: medium") ||
+                  response_lower.contains("リスクレベル: 中") ||
+                  response_lower.contains("medium risk") {
             RiskLevel::Medium
-        } else if response_lower.contains("low") {
+        } else if response_lower.contains("risk level: low") ||
+                  response_lower.contains("リスクレベル: 低") ||
+                  response_lower.contains("low risk") {
             RiskLevel::Low
+        } else if response_lower.contains("risk level: info") ||
+                  response_lower.contains("risk level: none") ||
+                  response_lower.contains("リスクレベル: 情報") {
+            RiskLevel::Info
         } else {
-            RiskLevel::Info // Default if unclear
+            // Fallback - look for standalone keywords
+            if response_lower.contains("critical") || response_lower.contains("クリティカル") {
+                RiskLevel::Critical
+            } else if response_lower.contains("high") || response_lower.contains("高リスク") {
+                RiskLevel::High
+            } else if response_lower.contains("medium") || response_lower.contains("中リスク") {
+                RiskLevel::Medium
+            } else if response_lower.contains("low") || response_lower.contains("低リスク") {
+                RiskLevel::Low
+            } else {
+                RiskLevel::Info
+            }
         };
 
         // Extract summary (first few sentences)

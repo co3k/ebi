@@ -1,10 +1,17 @@
+use crate::error::EbiError;
+use crate::localization::locale::LocalizedMessages;
 use crate::models::{
-    AnalysisResult, AnalysisReport, RiskLevel, AnalysisType,
-    ScriptInfo, ScriptComponents, SecurityRelevance, OutputLanguage,
+    AnalysisReport, AnalysisResult, AnalysisType, OutputLanguage, RiskLevel, ScriptComponents,
+    ScriptInfo, SecurityRelevance,
 };
 use crate::parser::SecurityClassifier;
-use crate::localization::locale::LocalizedMessages;
-use crate::error::EbiError;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LegitimacyHint {
+    Legitimate,
+    Suspicious,
+    Unknown,
+}
 
 pub struct AnalysisAggregator {
     classifier: SecurityClassifier,
@@ -26,7 +33,7 @@ impl AnalysisAggregator {
     ) -> Result<AnalysisReport, EbiError> {
         if results.is_empty() {
             return Err(EbiError::LlmClientError(
-                "No analysis results to aggregate".to_string()
+                "No analysis results to aggregate".to_string(),
             ));
         }
 
@@ -71,33 +78,35 @@ impl AnalysisAggregator {
         }
 
         // Aggregate multiple code analysis results
-        let highest_risk = results.iter()
+        let highest_risk = results
+            .iter()
             .map(|r| &r.risk_level)
             .max()
             .unwrap_or(&RiskLevel::Info);
 
-        let total_duration: u64 = results.iter()
-            .map(|r| r.analysis_duration_ms)
-            .sum();
+        let total_duration: u64 = results.iter().map(|r| r.analysis_duration_ms).sum();
 
-        let average_confidence = results.iter()
-            .map(|r| r.confidence)
-            .sum::<f32>() / results.len() as f32;
+        let average_confidence =
+            results.iter().map(|r| r.confidence).sum::<f32>() / results.len() as f32;
 
         // Combine summaries
-        let combined_summary = results.iter()
+        let combined_summary = results
+            .iter()
             .map(|r| r.summary.clone())
             .collect::<Vec<_>>()
             .join(" | ");
 
         // Combine details
-        let combined_details = results.iter()
+        let combined_details = results
+            .iter()
             .enumerate()
-            .map(|(i, r)| format!(
-                "Analysis {}: {}",
-                i + 1,
-                r.details.as_deref().unwrap_or("No details available")
-            ))
+            .map(|(i, r)| {
+                format!(
+                    "Analysis {}: {}",
+                    i + 1,
+                    r.details.as_deref().unwrap_or("No details available")
+                )
+            })
             .collect::<Vec<_>>()
             .join("\n\n");
 
@@ -127,31 +136,33 @@ impl AnalysisAggregator {
         }
 
         // Similar aggregation logic as code analysis
-        let highest_risk = results.iter()
+        let highest_risk = results
+            .iter()
             .map(|r| &r.risk_level)
             .max()
             .unwrap_or(&RiskLevel::Info);
 
-        let total_duration: u64 = results.iter()
-            .map(|r| r.analysis_duration_ms)
-            .sum();
+        let total_duration: u64 = results.iter().map(|r| r.analysis_duration_ms).sum();
 
-        let average_confidence = results.iter()
-            .map(|r| r.confidence)
-            .sum::<f32>() / results.len() as f32;
+        let average_confidence =
+            results.iter().map(|r| r.confidence).sum::<f32>() / results.len() as f32;
 
-        let combined_summary = results.iter()
+        let combined_summary = results
+            .iter()
             .map(|r| r.summary.clone())
             .collect::<Vec<_>>()
             .join(" | ");
 
-        let combined_details = results.iter()
+        let combined_details = results
+            .iter()
             .enumerate()
-            .map(|(i, r)| format!(
-                "Injection Analysis {}: {}",
-                i + 1,
-                r.details.as_deref().unwrap_or("No details available")
-            ))
+            .map(|(i, r)| {
+                format!(
+                    "Injection Analysis {}: {}",
+                    i + 1,
+                    r.details.as_deref().unwrap_or("No details available")
+                )
+            })
             .collect::<Vec<_>>()
             .join("\n\n");
 
@@ -173,26 +184,51 @@ impl AnalysisAggregator {
         report: &AnalysisReport,
         components: &ScriptComponents,
     ) -> RiskLevel {
-        let mut risk_factors = Vec::new();
+        let mut llm_risks = Vec::new();
+        let mut legitimacy_hints = Vec::new();
 
-        // Factor in LLM analysis results
         if let Some(ref code_analysis) = report.code_analysis {
-            risk_factors.push(code_analysis.risk_level.clone());
+            llm_risks.push(code_analysis.risk_level.clone());
+            if let Some(hint) =
+                detect_legitimacy_hint(&code_analysis.summary, code_analysis.details.as_ref())
+            {
+                legitimacy_hints.push(hint);
+            }
         }
 
         if let Some(ref injection_analysis) = report.injection_analysis {
-            risk_factors.push(injection_analysis.risk_level.clone());
+            llm_risks.push(injection_analysis.risk_level.clone());
+            if let Some(hint) = detect_legitimacy_hint(
+                &injection_analysis.summary,
+                injection_analysis.details.as_ref(),
+            ) {
+                legitimacy_hints.push(hint);
+            }
         }
 
-        // Factor in static analysis from components
-        let static_relevance = self.classifier.classify_script_overall_risk(&components.metadata.priority_nodes);
-        risk_factors.push(self.map_security_to_risk(static_relevance));
+        let llm_risk = llm_risks.into_iter().max().unwrap_or(RiskLevel::Info);
 
-        // Return the highest risk level found
-        risk_factors.iter()
-            .max()
-            .unwrap_or(&RiskLevel::Low)
-            .clone()
+        let combined_legitimacy = combine_legitimacy_hints(&legitimacy_hints);
+
+        let static_relevance = self
+            .classifier
+            .classify_script_overall_risk(&components.metadata.priority_nodes);
+        let static_risk = self.map_security_to_risk(static_relevance);
+
+        let adjusted_static_risk =
+            if matches!(combined_legitimacy, Some(LegitimacyHint::Legitimate)) {
+                std::cmp::min(static_risk, RiskLevel::Low)
+            } else {
+                static_risk
+            };
+
+        let mut overall = std::cmp::max(llm_risk, adjusted_static_risk);
+
+        if matches!(combined_legitimacy, Some(LegitimacyHint::Legitimate)) {
+            overall = std::cmp::min(overall, RiskLevel::Medium);
+        }
+
+        overall
     }
 
     fn enrich_report_with_insights(
@@ -202,7 +238,8 @@ impl AnalysisAggregator {
         output_language: &OutputLanguage,
     ) -> AnalysisReport {
         // Add execution recommendation
-        let (recommendation, advice) = LocalizedMessages::get_execution_guidance(&report.overall_risk, output_language);
+        let (recommendation, advice) =
+            LocalizedMessages::get_execution_guidance(&report.overall_risk, output_language);
         report.execution_recommendation = recommendation;
         report.execution_advice = Some(advice);
 
@@ -212,11 +249,14 @@ impl AnalysisAggregator {
         report.risk_explanation = Some(risk_explanation.to_string());
 
         // Add mitigation suggestions
-        let suggestions = self.classifier.get_risk_mitigation_suggestions(&components.metadata.priority_nodes);
+        let suggestions = self
+            .classifier
+            .get_risk_mitigation_suggestions(&components.metadata.priority_nodes);
         report.mitigation_suggestions = suggestions;
 
         // Add summary statistics
-        report.analysis_summary = self.generate_analysis_summary(&report, components, output_language);
+        report.analysis_summary =
+            self.generate_analysis_summary(&report, components, output_language);
 
         report
     }
@@ -238,7 +278,6 @@ impl AnalysisAggregator {
             RiskLevel::Low | RiskLevel::Info | RiskLevel::None => SecurityRelevance::Low,
         }
     }
-
 
     fn generate_analysis_summary(
         &self,
@@ -296,9 +335,8 @@ impl AnalysisAggregator {
             output_language,
         ));
 
-        summary_parts.join(". ")
+        summary_parts.join("\n")
     }
-
 
     pub fn validate_analysis_quality(&self, results: &[AnalysisResult]) -> Vec<String> {
         let mut warnings = Vec::new();
@@ -308,7 +346,8 @@ impl AnalysisAggregator {
             if result.confidence < 0.5 {
                 warnings.push(format!(
                     "Analysis {}: Low confidence ({:.1}%) - results may be unreliable",
-                    i + 1, result.confidence * 100.0
+                    i + 1,
+                    result.confidence * 100.0
                 ));
             }
 
@@ -322,8 +361,9 @@ impl AnalysisAggregator {
 
             // Check for analysis timeouts or errors in details
             if let Some(ref details) = result.details {
-                if details.to_lowercase().contains("timeout") ||
-                   details.to_lowercase().contains("error") {
+                if details.to_lowercase().contains("timeout")
+                    || details.to_lowercase().contains("error")
+                {
                     warnings.push(format!(
                         "Analysis {}: May have encountered issues during processing",
                         i + 1
@@ -336,6 +376,116 @@ impl AnalysisAggregator {
     }
 }
 
+fn combine_legitimacy_hints(hints: &[LegitimacyHint]) -> Option<LegitimacyHint> {
+    if hints.is_empty() {
+        return None;
+    }
+
+    if hints.contains(&LegitimacyHint::Suspicious) {
+        Some(LegitimacyHint::Suspicious)
+    } else if hints.contains(&LegitimacyHint::Legitimate) {
+        Some(LegitimacyHint::Legitimate)
+    } else if hints.contains(&LegitimacyHint::Unknown) {
+        Some(LegitimacyHint::Unknown)
+    } else {
+        None
+    }
+}
+
+fn detect_legitimacy_hint(summary: &str, details: Option<&String>) -> Option<LegitimacyHint> {
+    if let Some(hint) = parse_legitimacy_from_text(summary) {
+        return Some(hint);
+    }
+
+    if let Some(details_text) = details {
+        if let Some(hint) = parse_legitimacy_from_text(details_text) {
+            return Some(hint);
+        }
+    }
+
+    None
+}
+
+fn parse_legitimacy_from_text(text: &str) -> Option<LegitimacyHint> {
+    for line in text.lines() {
+        if let Some(hint) = parse_legitimacy_from_line(line) {
+            return Some(hint);
+        }
+    }
+
+    // Fallback to whole-text search in case formatting removes line breaks
+    let lower = text.to_lowercase();
+    if lower.contains("legitimacy assessment") {
+        if lower.contains("suspicious") {
+            return Some(LegitimacyHint::Suspicious);
+        }
+        if lower.contains("legitimate") {
+            return Some(LegitimacyHint::Legitimate);
+        }
+        if lower.contains("unknown") {
+            return Some(LegitimacyHint::Unknown);
+        }
+    }
+
+    if text.contains("正当性評価") || text.contains("正当性判定") {
+        if text.contains("不審") || text.contains("疑わしい") {
+            return Some(LegitimacyHint::Suspicious);
+        }
+        if text.contains("正当") {
+            return Some(LegitimacyHint::Legitimate);
+        }
+        if text.contains("不明") {
+            return Some(LegitimacyHint::Unknown);
+        }
+    }
+
+    if text.contains("正当") && !text.contains("不正") {
+        return Some(LegitimacyHint::Legitimate);
+    }
+
+    None
+}
+
+fn parse_legitimacy_from_line(line: &str) -> Option<LegitimacyHint> {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let lower = trimmed.to_lowercase();
+    if lower.starts_with("legitimacy assessment") {
+        if lower.contains("suspicious") {
+            Some(LegitimacyHint::Suspicious)
+        } else if lower.contains("legitimate") {
+            Some(LegitimacyHint::Legitimate)
+        } else if lower.contains("unknown") {
+            Some(LegitimacyHint::Unknown)
+        } else {
+            None
+        }
+    } else if trimmed.starts_with("正当性評価") || trimmed.starts_with("正当性判定") {
+        if trimmed.contains("不審") || trimmed.contains("疑わしい") {
+            Some(LegitimacyHint::Suspicious)
+        } else if trimmed.contains("正当") {
+            Some(LegitimacyHint::Legitimate)
+        } else if trimmed.contains("不明") {
+            Some(LegitimacyHint::Unknown)
+        } else {
+            None
+        }
+    } else if lower.contains("legitimate") && !lower.contains("suspicious") {
+        Some(LegitimacyHint::Legitimate)
+    } else if lower.contains("suspicious") {
+        Some(LegitimacyHint::Suspicious)
+    } else if trimmed.contains("正当") && !trimmed.contains("疑わしい") {
+        Some(LegitimacyHint::Legitimate)
+    } else if trimmed.contains("疑わしい") || trimmed.contains("不審") {
+        Some(LegitimacyHint::Suspicious)
+    } else {
+        None
+    }
+}
+
 impl Default for AnalysisAggregator {
     fn default() -> Self {
         Self::new()
@@ -345,7 +495,7 @@ impl Default for AnalysisAggregator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::{ScriptComponents, ExecutionRecommendation, Language};
+    use crate::models::{ExecutionRecommendation, Language, ScriptComponents};
 
     #[test]
     fn test_risk_calculation() {
@@ -371,11 +521,13 @@ mod tests {
         report.overall_risk = RiskLevel::Critical;
 
         use crate::localization::locale::LocalizedMessages;
-        let (recommendation, advice) = LocalizedMessages::get_execution_guidance(&report.overall_risk, &OutputLanguage::English);
+        let (recommendation, advice) = LocalizedMessages::get_execution_guidance(
+            &report.overall_risk,
+            &OutputLanguage::English,
+        );
         assert_eq!(recommendation, ExecutionRecommendation::Blocked);
         assert!(advice.contains("BLOCK EXECUTION"));
     }
-
 
     #[test]
     fn test_analysis_quality_validation() {

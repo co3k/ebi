@@ -1,4 +1,4 @@
-use crate::models::{OutputLanguage, SecurityRelevance, RiskLevel, ExecutionRecommendation};
+use crate::models::{ExecutionRecommendation, OutputLanguage, RiskLevel, SecurityRelevance};
 use std::env;
 
 pub struct LocaleDetector;
@@ -6,7 +6,10 @@ pub struct LocaleDetector;
 pub struct LocalizedMessages;
 
 impl LocalizedMessages {
-    pub fn get_risk_explanation(relevance: &SecurityRelevance, language: &OutputLanguage) -> &'static str {
+    pub fn get_risk_explanation(
+        relevance: &SecurityRelevance,
+        language: &OutputLanguage,
+    ) -> &'static str {
         match (relevance, language) {
             (SecurityRelevance::Critical, OutputLanguage::Japanese) => {
                 "システムに深刻な損害を与える可能性、任意コードの実行、またはシステムセキュリティの侵害を引き起こす可能性のある操作を含みます"
@@ -35,7 +38,10 @@ impl LocalizedMessages {
         }
     }
 
-    pub fn get_execution_guidance(risk: &RiskLevel, language: &OutputLanguage) -> (ExecutionRecommendation, String) {
+    pub fn get_execution_guidance(
+        risk: &RiskLevel,
+        language: &OutputLanguage,
+    ) -> (ExecutionRecommendation, String) {
         match (risk, language) {
             (RiskLevel::Critical, OutputLanguage::Japanese) => (
                 ExecutionRecommendation::Blocked,
@@ -88,10 +94,16 @@ impl LocalizedMessages {
     ) -> String {
         match language {
             OutputLanguage::Japanese => {
-                format!("{}スクリプトを分析しました（{}行、{}バイト）", language_str, line_count, size_bytes)
+                format!(
+                    "{}スクリプトを分析しました（{}行、{}バイト）",
+                    language_str, line_count, size_bytes
+                )
             }
             OutputLanguage::English => {
-                format!("Analyzed {} script ({} lines, {} bytes)", language_str, line_count, size_bytes)
+                format!(
+                    "Analyzed {} script ({} lines, {} bytes)",
+                    language_str, line_count, size_bytes
+                )
             }
         }
     }
@@ -124,10 +136,18 @@ impl LocalizedMessages {
     ) -> String {
         match language {
             OutputLanguage::Japanese => {
-                format!("コード脆弱性分析: {}リスク（信頼度: {:.0}%）", risk_level, confidence * 100.0)
+                format!(
+                    "コード脆弱性分析: {}リスク（信頼度: {:.0}%）",
+                    risk_level,
+                    confidence * 100.0
+                )
             }
             OutputLanguage::English => {
-                format!("Code vulnerability analysis: {} risk (confidence: {:.0}%)", risk_level, confidence * 100.0)
+                format!(
+                    "Code vulnerability analysis: {} risk (confidence: {:.0}%)",
+                    risk_level,
+                    confidence * 100.0
+                )
             }
         }
     }
@@ -139,18 +159,23 @@ impl LocalizedMessages {
     ) -> String {
         match language {
             OutputLanguage::Japanese => {
-                format!("インジェクション検出: {}リスク（信頼度: {:.0}%）", risk_level, confidence * 100.0)
+                format!(
+                    "インジェクション検出: {}リスク（信頼度: {:.0}%）",
+                    risk_level,
+                    confidence * 100.0
+                )
             }
             OutputLanguage::English => {
-                format!("Injection detection: {} risk (confidence: {:.0}%)", risk_level, confidence * 100.0)
+                format!(
+                    "Injection detection: {} risk (confidence: {:.0}%)",
+                    risk_level,
+                    confidence * 100.0
+                )
             }
         }
     }
 
-    pub fn format_overall_risk_assessment(
-        risk_level: &str,
-        language: &OutputLanguage,
-    ) -> String {
+    pub fn format_overall_risk_assessment(risk_level: &str, language: &OutputLanguage) -> String {
         match language {
             OutputLanguage::Japanese => {
                 format!("総合リスク評価: {}", risk_level)
@@ -263,12 +288,7 @@ impl LocaleDetector {
     /// Detect the system locale and return the appropriate OutputLanguage
     pub fn detect_system_locale() -> OutputLanguage {
         // Try multiple environment variables in order of preference
-        let locale_vars = [
-            "LC_ALL",
-            "LC_MESSAGES", 
-            "LANG",
-            "LANGUAGE"
-        ];
+        let locale_vars = ["LC_ALL", "LC_MESSAGES", "LANG", "LANGUAGE"];
 
         for var in &locale_vars {
             if let Ok(locale) = env::var(var) {
@@ -290,26 +310,36 @@ impl LocaleDetector {
         // - ja
         // - Japanese_Japan.932
         // - C.UTF-8 (fallback to English)
-        
+
         let locale_lower = locale.to_lowercase();
-        
+
         // Check for Japanese locale indicators
-        if locale_lower.starts_with("ja") || 
-           locale_lower.contains("japanese") ||
-           locale_lower.contains("japan") {
+        if locale_lower.starts_with("ja")
+            || locale_lower.contains("japanese")
+            || locale_lower.contains("japan")
+        {
             return Some(OutputLanguage::Japanese);
         }
-        
-        // Check for English locale indicators
-        if locale_lower.starts_with("en") || 
-           locale_lower.contains("english") ||
-           locale_lower.contains("american") ||
-           locale_lower.contains("british") ||
-           locale_lower == "c" ||
-           locale_lower == "posix" {
+
+        // Handle C/POSIX locales as English defaults
+        if locale_lower == "c"
+            || locale_lower == "posix"
+            || locale_lower.starts_with("c.")
+            || locale_lower.starts_with("c_")
+            || locale_lower.starts_with("c-")
+        {
             return Some(OutputLanguage::English);
         }
-        
+
+        // Check for English locale indicators
+        if locale_lower.starts_with("en")
+            || locale_lower.contains("english")
+            || locale_lower.contains("american")
+            || locale_lower.contains("british")
+        {
+            return Some(OutputLanguage::English);
+        }
+
         // If we can't determine the language, return None
         None
     }
@@ -317,12 +347,12 @@ impl LocaleDetector {
     /// Get the current system locale string for debugging
     pub fn get_system_locale_info() -> String {
         let mut info = Vec::new();
-        
+
         let locale_vars = [
             ("LC_ALL", "LC_ALL"),
-            ("LC_MESSAGES", "LC_MESSAGES"), 
+            ("LC_MESSAGES", "LC_MESSAGES"),
             ("LANG", "LANG"),
-            ("LANGUAGE", "LANGUAGE")
+            ("LANGUAGE", "LANGUAGE"),
         ];
 
         for (var, name) in &locale_vars {
@@ -331,7 +361,7 @@ impl LocaleDetector {
                 Err(_) => info.push(format!("{}=(not set)", name)),
             }
         }
-        
+
         info.join(", ")
     }
 }
@@ -342,22 +372,58 @@ mod tests {
 
     #[test]
     fn test_parse_locale_japanese() {
-        assert_eq!(LocaleDetector::parse_locale("ja_JP.UTF-8"), Some(OutputLanguage::Japanese));
-        assert_eq!(LocaleDetector::parse_locale("ja_JP"), Some(OutputLanguage::Japanese));
-        assert_eq!(LocaleDetector::parse_locale("ja"), Some(OutputLanguage::Japanese));
-        assert_eq!(LocaleDetector::parse_locale("Japanese_Japan.932"), Some(OutputLanguage::Japanese));
-        assert_eq!(LocaleDetector::parse_locale("japanese"), Some(OutputLanguage::Japanese));
+        assert_eq!(
+            LocaleDetector::parse_locale("ja_JP.UTF-8"),
+            Some(OutputLanguage::Japanese)
+        );
+        assert_eq!(
+            LocaleDetector::parse_locale("ja_JP"),
+            Some(OutputLanguage::Japanese)
+        );
+        assert_eq!(
+            LocaleDetector::parse_locale("ja"),
+            Some(OutputLanguage::Japanese)
+        );
+        assert_eq!(
+            LocaleDetector::parse_locale("Japanese_Japan.932"),
+            Some(OutputLanguage::Japanese)
+        );
+        assert_eq!(
+            LocaleDetector::parse_locale("japanese"),
+            Some(OutputLanguage::Japanese)
+        );
     }
 
     #[test]
     fn test_parse_locale_english() {
-        assert_eq!(LocaleDetector::parse_locale("en_US.UTF-8"), Some(OutputLanguage::English));
-        assert_eq!(LocaleDetector::parse_locale("en_US"), Some(OutputLanguage::English));
-        assert_eq!(LocaleDetector::parse_locale("en"), Some(OutputLanguage::English));
-        assert_eq!(LocaleDetector::parse_locale("English_United States.1252"), Some(OutputLanguage::English));
-        assert_eq!(LocaleDetector::parse_locale("english"), Some(OutputLanguage::English));
-        assert_eq!(LocaleDetector::parse_locale("C.UTF-8"), Some(OutputLanguage::English));
-        assert_eq!(LocaleDetector::parse_locale("POSIX"), Some(OutputLanguage::English));
+        assert_eq!(
+            LocaleDetector::parse_locale("en_US.UTF-8"),
+            Some(OutputLanguage::English)
+        );
+        assert_eq!(
+            LocaleDetector::parse_locale("en_US"),
+            Some(OutputLanguage::English)
+        );
+        assert_eq!(
+            LocaleDetector::parse_locale("en"),
+            Some(OutputLanguage::English)
+        );
+        assert_eq!(
+            LocaleDetector::parse_locale("English_United States.1252"),
+            Some(OutputLanguage::English)
+        );
+        assert_eq!(
+            LocaleDetector::parse_locale("english"),
+            Some(OutputLanguage::English)
+        );
+        assert_eq!(
+            LocaleDetector::parse_locale("C.UTF-8"),
+            Some(OutputLanguage::English)
+        );
+        assert_eq!(
+            LocaleDetector::parse_locale("POSIX"),
+            Some(OutputLanguage::English)
+        );
     }
 
     #[test]

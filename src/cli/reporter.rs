@@ -1,6 +1,6 @@
-use crate::models::{AnalysisReport, RiskLevel};
 use crate::cli::args::Cli;
 use crate::localization::LocalizedStrings;
+use crate::models::{AnalysisReport, RiskLevel};
 
 pub struct ReportFormatter {
     use_colors: bool,
@@ -31,22 +31,29 @@ impl ReportFormatter {
 
         // Summary
         if !report.analysis_summary.is_empty() {
-            let section_title = self.localized_strings.get_analysis_section("analysis_summary");
+            let section_title = self
+                .localized_strings
+                .get_analysis_section("analysis_summary");
             output.push_str(&self.format_section(section_title, &report.analysis_summary));
             output.push_str("\n\n");
         }
 
         // Code Analysis Results
         if let Some(ref code_analysis) = report.code_analysis {
-            let section_title = self.localized_strings.get_analysis_section("code_vulnerability_analysis");
-            output.push_str(&self.format_section(section_title, &format!(
-                "Risk Level: {}\nConfidence: {:.0}%\nModel: {} ({}ms)\n\nSummary:\n{}",
-                code_analysis.risk_level.as_str(),
-                code_analysis.confidence * 100.0,
-                code_analysis.model_used,
-                code_analysis.analysis_duration_ms,
-                code_analysis.summary
-            )));
+            let section_title = self
+                .localized_strings
+                .get_analysis_section("code_vulnerability_analysis");
+            output.push_str(&self.format_section(
+                section_title,
+                &format!(
+                    "Risk Level: {}\nConfidence: {:.0}%\nModel: {} ({}ms)\n\nSummary:\n{}",
+                    code_analysis.risk_level.as_str(),
+                    code_analysis.confidence * 100.0,
+                    code_analysis.model_used,
+                    code_analysis.analysis_duration_ms,
+                    code_analysis.summary
+                ),
+            ));
 
             if self.verbose {
                 if let Some(ref details) = code_analysis.details {
@@ -59,15 +66,20 @@ impl ReportFormatter {
 
         // Injection Analysis Results
         if let Some(ref injection_analysis) = report.injection_analysis {
-            let section_title = self.localized_strings.get_analysis_section("injection_detection_analysis");
-            output.push_str(&self.format_section(section_title, &format!(
-                "Risk Level: {}\nConfidence: {:.0}%\nModel: {} ({}ms)\n\nSummary:\n{}",
-                injection_analysis.risk_level.as_str(),
-                injection_analysis.confidence * 100.0,
-                injection_analysis.model_used,
-                injection_analysis.analysis_duration_ms,
-                injection_analysis.summary
-            )));
+            let section_title = self
+                .localized_strings
+                .get_analysis_section("injection_detection_analysis");
+            output.push_str(&self.format_section(
+                section_title,
+                &format!(
+                    "Risk Level: {}\nConfidence: {:.0}%\nModel: {} ({}ms)\n\nSummary:\n{}",
+                    injection_analysis.risk_level.as_str(),
+                    injection_analysis.confidence * 100.0,
+                    injection_analysis.model_used,
+                    injection_analysis.analysis_duration_ms,
+                    injection_analysis.summary
+                ),
+            ));
 
             if self.verbose {
                 if let Some(ref details) = injection_analysis.details {
@@ -80,21 +92,26 @@ impl ReportFormatter {
 
         // Risk Explanation
         if let Some(ref explanation) = report.risk_explanation {
-            let section_title = self.localized_strings.get_analysis_section("risk_explanation");
+            let section_title = self
+                .localized_strings
+                .get_analysis_section("risk_explanation");
             output.push_str(&self.format_section(section_title, explanation));
             output.push_str("\n\n");
         }
 
         // Mitigation Suggestions
         if !report.mitigation_suggestions.is_empty() {
-            let suggestions = report.mitigation_suggestions
+            let suggestions = report
+                .mitigation_suggestions
                 .iter()
                 .enumerate()
                 .map(|(i, suggestion)| format!("{}. {}", i + 1, suggestion))
                 .collect::<Vec<_>>()
                 .join("\n");
 
-            let section_title = self.localized_strings.get_analysis_section("recommended_mitigations");
+            let section_title = self
+                .localized_strings
+                .get_analysis_section("recommended_mitigations");
             output.push_str(&self.format_section(section_title, &suggestions));
             output.push_str("\n\n");
         }
@@ -108,7 +125,7 @@ impl ReportFormatter {
     fn format_header(&self, report: &AnalysisReport) -> String {
         let header_text = self.localized_strings.get("report_header");
         let script_text = self.localized_strings.get("report_script_info");
-        
+
         if self.use_colors {
             format!(
                 "\x1b[1m\x1b[36m═══ {} ═══\x1b[0m\n\
@@ -162,11 +179,7 @@ impl ReportFormatter {
 
     fn format_section(&self, title: &str, content: &str) -> String {
         if self.use_colors {
-            format!(
-                "\x1b[1m\x1b[37m{}\x1b[0m\n{}",
-                title,
-                content
-            )
+            format!("\x1b[1m\x1b[37m{}\x1b[0m\n{}", title, content)
         } else {
             format!(
                 "{}\n{}{}",
@@ -191,7 +204,9 @@ impl ReportFormatter {
         };
 
         let reset = if self.use_colors { "\x1b[0m" } else { "" };
-        let section_title = self.localized_strings.get_analysis_section("execution_recommendation");
+        let section_title = self
+            .localized_strings
+            .get_analysis_section("execution_recommendation");
 
         let recommendation_text = report
             .execution_advice
@@ -200,11 +215,7 @@ impl ReportFormatter {
 
         format!(
             "{}{} {}{}\n\n{}",
-            color_code,
-            emoji,
-            section_title,
-            reset,
-            recommendation_text
+            color_code, emoji, section_title, reset, recommendation_text
         )
     }
 
@@ -217,7 +228,9 @@ impl ReportFormatter {
             RiskLevel::Info | RiskLevel::None => "ℹ️",
         };
 
-        let risk_text = self.localized_strings.get_risk_level(report.overall_risk.as_str());
+        let risk_text = self
+            .localized_strings
+            .get_risk_level(report.overall_risk.as_str());
         let blocked_text = self.localized_strings.get_message("blocked");
         let review_text = self.localized_strings.get_message("review_required");
 
@@ -226,7 +239,11 @@ impl ReportFormatter {
             risk_icon,
             risk_text,
             report.script_info.language.as_str(),
-            if report.should_block_execution() { blocked_text } else { review_text }
+            if report.should_block_execution() {
+                blocked_text
+            } else {
+                review_text
+            }
         )
     }
 
@@ -242,11 +259,7 @@ impl ReportFormatter {
 
         format!(
             "{}🚨 {}{}\n\n{}\n\n{}",
-            color_code,
-            error_title,
-            reset,
-            error,
-            error_desc
+            color_code, error_title, reset, error, error_desc
         )
     }
 
@@ -264,8 +277,14 @@ impl ReportFormatter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::{ScriptInfo, Language, ExecutionRecommendation};
+    use crate::models::{ExecutionRecommendation, Language, ScriptInfo};
     use clap::Parser;
+    use std::sync::{Mutex, OnceLock};
+
+    fn env_lock() -> &'static Mutex<()> {
+        static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        ENV_LOCK.get_or_init(|| Mutex::new(()))
+    }
 
     #[test]
     fn test_report_formatting() {
@@ -276,15 +295,27 @@ mod tests {
         report.execution_recommendation = ExecutionRecommendation::Dangerous;
         report.execution_advice = Some("Test recommendation".to_string());
 
+        let _guard = env_lock().lock().unwrap();
+        std::env::set_var("LANG", "en_US.UTF-8");
         let cli = crate::cli::args::Cli::try_parse_from(vec!["ebi", "bash"]).unwrap();
         let formatter = ReportFormatter::new(&cli).unwrap();
 
         let formatted = formatter.format_analysis_report(&report);
 
-        assert!(formatted.contains("SECURITY ANALYSIS REPORT"));
-        assert!(formatted.contains("HIGH"));
-        assert!(formatted.contains("Test summary"));
-        assert!(formatted.contains("Test recommendation"));
+        assert!(
+            formatted.contains("EBI SECURITY ANALYSIS REPORT"),
+            "report: {}",
+            formatted
+        );
+        assert!(formatted.contains("HIGH"), "report: {}", formatted);
+        assert!(formatted.contains("Test summary"), "report: {}", formatted);
+        assert!(
+            formatted.contains("Test recommendation"),
+            "report: {}",
+            formatted
+        );
+
+        std::env::remove_var("LANG");
     }
 
     #[test]
@@ -295,30 +326,40 @@ mod tests {
         report.execution_recommendation = ExecutionRecommendation::Blocked;
         report.execution_advice = Some("BLOCK EXECUTION".to_string());
 
+        let _guard = env_lock().lock().unwrap();
+        std::env::set_var("LANG", "en_US.UTF-8");
         let cli = crate::cli::args::Cli::try_parse_from(vec!["ebi", "python"]).unwrap();
         let formatter = ReportFormatter::new(&cli).unwrap();
 
         let summary = formatter.format_compact_summary(&report);
 
-        assert!(summary.contains("CRITICAL"));
-        assert!(summary.contains("python"));
-        assert!(summary.contains("BLOCKED"));
+        assert!(summary.contains("CRITICAL"), "summary: {}", summary);
+        assert!(summary.contains("python"), "summary: {}", summary);
+        assert!(summary.contains("BLOCKED"), "summary: {}", summary);
+
+        std::env::remove_var("LANG");
     }
 
     #[test]
     fn test_error_formatting() {
+        let _guard = env_lock().lock().unwrap();
+        std::env::set_var("LANG", "en_US.UTF-8");
         let cli = crate::cli::args::Cli::try_parse_from(vec!["ebi", "bash"]).unwrap();
         let formatter = ReportFormatter::new(&cli).unwrap();
 
         let error = crate::error::EbiError::AnalysisTimeout { timeout: 60 };
         let formatted = formatter.format_error(&error);
 
-        assert!(formatted.contains("ANALYSIS ERROR"));
-        assert!(formatted.contains("blocked"));
+        assert!(formatted.contains("ANALYSIS ERROR"), "error: {}", formatted);
+        assert!(formatted.contains("blocked"), "error: {}", formatted);
+
+        std::env::remove_var("LANG");
     }
 
     #[test]
     fn test_color_handling() {
+        let _guard = env_lock().lock().unwrap();
+        std::env::set_var("LANG", "en_US.UTF-8");
         let cli = crate::cli::args::Cli::try_parse_from(vec!["ebi", "bash"]).unwrap();
         let formatter = ReportFormatter::new(&cli).unwrap();
 
@@ -326,5 +367,7 @@ mod tests {
         // In a real environment, NO_COLOR might be set
         let risk_formatted = formatter.format_risk_level(&RiskLevel::Critical);
         assert!(risk_formatted.contains("CRITICAL"));
+
+        std::env::remove_var("LANG");
     }
 }

@@ -1,4 +1,4 @@
-use crate::models::{Language, AnalysisType, ScriptSource, OutputLanguage};
+use crate::models::{AnalysisType, Language, OutputLanguage, ScriptSource};
 
 pub struct PromptTemplate;
 
@@ -60,6 +60,7 @@ REQUIRED ANALYSIS APPROACH:
 3. **Specific Concerns**: List exact lines/operations that warrant attention
 4. **Risk Justification**: Explain why each finding matters in context
 5. **Actionable Guidance**: Provide specific steps to verify safety
+6. **No Filler**: Do NOT include conversational phrases (e.g., "As a cybersecurity analyst...") or restatements of these instructions
 
 LANGUAGE-SPECIFIC GUIDANCE:
 {}
@@ -90,7 +91,7 @@ RECOMMENDED ACTIONS:
 
 CONFIDENCE: [High/Medium/Low] - [Based on script clarity and analysis completeness]
 
-IMPORTANT: Provide all output in {} language. Be precise and helpful, not alarmist."#,
+IMPORTANT: Provide all output in {} language. Be precise and helpful, not alarmist. Avoid conversational fillers and only respond with the requested sections."#,
             language.as_str(),
             source,
             content.len(),
@@ -109,7 +110,7 @@ IMPORTANT: Provide all output in {} language. Be precise and helpful, not alarmi
         output_language: &OutputLanguage,
     ) -> String {
         format!(
-            r#"INJECTION DETECTION ANALYSIS
+            r#"INJECTION & SOCIAL ENGINEERING ANALYSIS
 
 SCRIPT LANGUAGE: {}
 SCRIPT SOURCE: {}
@@ -118,44 +119,52 @@ OUTPUT LANGUAGE: {}
 EXTRACTED CONTENT FOR ANALYSIS:
 {}
 
-ANALYSIS FOCUS:
-This content consists of comments and string literals extracted from a {} script.
-Please analyze for potential injection attacks, social engineering, or malicious content.
+ANALYSIS ROLE:
+You are a cybersecurity analyst helping users judge injection or social-engineering risk while recognizing legitimate installers and setup scripts.
 
-SPECIFIC CHECKS:
-1. **Obfuscation Detection**: Look for base64, hex, or other encoding that might hide malicious content
-2. **Social Engineering**: Check for misleading comments or instructions
-3. **Injection Patterns**: Identify potential code injection attempts in strings
-4. **Suspicious URLs**: Flag any suspicious domains or IP addresses
-5. **Command Injection**: Look for shell metacharacters in strings
-6. **Data Exfiltration**: Identify patterns that might indicate data theft
-
-LANGUAGE-SPECIFIC PATTERNS:
+CONTEXT-AWARE GUIDELINES:
+- Determine the script's likely purpose and source authenticity (official Homebrew/Docker installers, well-known package managers, vetted vendor repos, etc.).
+- Treat standard installer behavior (creating directories, downloading official repos, configuring PATH) as expected unless evidence shows tampering.
+- Focus on concrete malicious intent: hidden payloads, untrusted remote endpoints, credential prompts, execution of user-controlled data, or obfuscation meant to evade review.
+- Use the following language-specific cues when scanning for risks:
 {}
 
+REQUIRED ANALYSIS STEPS:
+1. Summarize the apparent purpose of the extracted content.
+2. Assess legitimacy (Legitimate / Suspicious / Unknown) with a short justification.
+3. Call out only genuine concerns (obfuscation, suspicious domains, injection vectors) with precise locations or string snippets.
+4. Explain why each concern matters for this script type and how to verify safety.
+5. If no significant risks are found, clearly state that no injection or social-engineering issues were identified.
+6. Keep the response concise—expand detail only when actual risks exist.
+
 OUTPUT FORMAT:
+
+SCRIPT PURPOSE: [What this content appears to be doing]
+
+LEGITIMACY ASSESSMENT: [Legitimate/Suspicious/Unknown] - [Brief reasoning]
+
 RISK LEVEL: [Critical/High/Medium/Low/Info]
 
-SUSPICIOUS PATTERNS:
-[List any concerning patterns found]
+SPECIFIC FINDINGS:
+[If concerns exist, list each as follows. Otherwise, state "No injection or social-engineering risks identified".]
+Line/Excerpt: [Reference to the concerning string or section]
+→ Concern: [What makes it risky]
+→ Context: [Why it matters for this script type]
+→ Verification: [How to confirm safety]
 
-INJECTION RISKS:
-[Assess potential for injection attacks]
+OVERALL ASSESSMENT:
+[Balanced evaluation considering purpose, legitimacy, and actual risks]
 
-SOCIAL ENGINEERING INDICATORS:
-[Note any misleading or suspicious content]
+RECOMMENDED ACTIONS:
+[Only include if there are actionable next steps. Use "None" when no issues are present.]
 
-RECOMMENDATIONS:
-[Specific steps to address identified issues]
+CONFIDENCE: [High/Medium/Low] - [Explain confidence level]
 
-CONFIDENCE LEVEL: [High/Medium/Low]
-
-IMPORTANT: Please provide all output in {} language."#,
+IMPORTANT: Provide all output in {} language, keep section headings exactly as shown, and avoid conversational filler."#,
             language.as_str(),
             source,
             output_language.as_llm_language(),
             content,
-            language.as_str(),
             Self::get_injection_patterns_guidance(language),
             output_language.as_llm_language()
         )
@@ -525,7 +534,10 @@ Focus on actionable intelligence and comprehensive threat understanding."#.to_st
         }
     }
 
-    pub fn build_system_prompt(analysis_type: &AnalysisType, output_language: &OutputLanguage) -> String {
+    pub fn build_system_prompt(
+        analysis_type: &AnalysisType,
+        output_language: &OutputLanguage,
+    ) -> String {
         let base_instructions = r#"You are a practical cybersecurity analyst helping users make informed decisions about script safety.
 
 CORE PRINCIPLES:
@@ -552,7 +564,12 @@ RISK ASSESSMENT STANDARDS:
 
         let context = Self::build_context_prompt(analysis_type);
 
-        format!("{}\n\n{}\n\nOUTPUT LANGUAGE: {}", base_instructions, context, output_language.as_llm_language())
+        format!(
+            "{}\n\n{}\n\nOUTPUT LANGUAGE: {}",
+            base_instructions,
+            context,
+            output_language.as_llm_language()
+        )
     }
 
     pub fn validate_prompt_length(prompt: &str, max_tokens: usize) -> Result<String, String> {
@@ -567,7 +584,9 @@ RISK ASSESSMENT STANDARDS:
                 .saturating_sub(reserved_instruction_chars);
 
             if let Some(content_start) = prompt.find("SCRIPT CONTENT:") {
-                if let Some(content_end) = prompt[content_start..].find("\n\nANALYSIS REQUIREMENTS:") {
+                if let Some(content_end) =
+                    prompt[content_start..].find("\n\nANALYSIS REQUIREMENTS:")
+                {
                     let full_content_end = content_start + content_end;
                     let content_section = &prompt[content_start..full_content_end];
 
@@ -579,10 +598,7 @@ RISK ASSESSMENT STANDARDS:
 
                         let total_chars = content_body.chars().count();
                         let excerpt_len = max_content_chars.min(total_chars);
-                        let excerpt = content_body
-                            .chars()
-                            .take(excerpt_len)
-                            .collect::<String>();
+                        let excerpt = content_body.chars().take(excerpt_len).collect::<String>();
 
                         let truncated_content = format!(
                             "SCRIPT CONTENT:\n```\n{}\n[... TRUNCATED - showing first {} characters of {} total ...]\n```",
@@ -603,7 +619,10 @@ RISK ASSESSMENT STANDARDS:
                 }
             }
 
-            Err(format!("Prompt too long: {} estimated tokens (max: {})", estimated_tokens, max_tokens))
+            Err(format!(
+                "Prompt too long: {} estimated tokens (max: {})",
+                estimated_tokens, max_tokens
+            ))
         } else {
             Ok(prompt.to_string())
         }
@@ -623,10 +642,10 @@ mod tests {
             &OutputLanguage::English,
         );
 
-        assert!(prompt.contains("SECURITY ANALYSIS REQUEST"));
-        assert!(prompt.contains("bash"));
+        assert!(prompt.contains("SECURITY VULNERABILITY ANALYSIS"));
+        assert!(prompt.contains("SCRIPT PURPOSE"));
+        assert!(prompt.contains("LEGITIMACY ASSESSMENT"));
         assert!(prompt.contains("echo hello"));
-        assert!(prompt.contains("VULNERABILITIES FOUND"));
         assert!(prompt.contains("OUTPUT LANGUAGE: English"));
     }
 
@@ -640,21 +659,28 @@ mod tests {
             &OutputLanguage::English,
         );
 
-        assert!(prompt.contains("INJECTION DETECTION"));
+        assert!(prompt.contains("INJECTION & SOCIAL ENGINEERING ANALYSIS"));
         assert!(prompt.contains("python"));
         assert!(prompt.contains("This is a comment"));
-        assert!(prompt.contains("SUSPICIOUS PATTERNS"));
+        assert!(prompt.contains("LEGITIMACY ASSESSMENT"));
+        assert!(prompt.contains("SPECIFIC FINDINGS"));
         assert!(prompt.contains("OUTPUT LANGUAGE: English"));
     }
 
     #[test]
     fn test_system_prompt_generation() {
-        let prompt = PromptTemplate::build_system_prompt(&AnalysisType::CodeVulnerability, &OutputLanguage::English);
+        let prompt = PromptTemplate::build_system_prompt(
+            &AnalysisType::CodeVulnerability,
+            &OutputLanguage::English,
+        );
         assert!(prompt.contains("security analyst"));
         assert!(prompt.contains("vulnerabilities"));
         assert!(prompt.contains("OUTPUT LANGUAGE: English"));
 
-        let prompt = PromptTemplate::build_system_prompt(&AnalysisType::InjectionDetection, &OutputLanguage::Japanese);
+        let prompt = PromptTemplate::build_system_prompt(
+            &AnalysisType::InjectionDetection,
+            &OutputLanguage::Japanese,
+        );
         assert!(prompt.contains("injection attack"));
         assert!(prompt.contains("OUTPUT LANGUAGE: Japanese"));
     }
@@ -667,7 +693,10 @@ mod tests {
         assert_eq!(result.unwrap(), short_prompt);
 
         let long_content = "x".repeat(10000);
-        let long_prompt = format!("SCRIPT CONTENT:\n{}\n\nANALYSIS REQUIREMENTS:\nAnalyze this", long_content);
+        let long_prompt = format!(
+            "SCRIPT CONTENT:\n{}\n\nANALYSIS REQUIREMENTS:\nAnalyze this",
+            long_content
+        );
         let result = PromptTemplate::validate_prompt_length(&long_prompt, 100);
         assert!(result.is_ok());
         assert!(result.unwrap().contains("TRUNCATED"));

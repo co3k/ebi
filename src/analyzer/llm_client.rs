@@ -379,6 +379,7 @@ fn clean_summary_text(summary: String) -> String {
         let sanitized = trimmed
             .replace("**", "")
             .replace('`', "")
+            .replace('|', " ")
             .trim()
             .to_string();
 
@@ -419,7 +420,25 @@ fn clean_summary_text(summary: String) -> String {
     }
 
     if cleaned.is_empty() {
-        return summary;
+        let fallback = summary
+            .lines()
+            .filter_map(|line| {
+                let trimmed = line.trim();
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(trimmed.replace("**", "").replace('`', ""))
+                }
+            })
+            .take(5)
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        if fallback.is_empty() {
+            return summary.chars().take(400).collect();
+        }
+
+        return fallback.chars().take(800).collect();
     }
 
     while cleaned.last().map(|s| s.is_empty()).unwrap_or(false) {

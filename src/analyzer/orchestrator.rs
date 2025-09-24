@@ -1,12 +1,12 @@
-use crate::models::{
-    AnalysisRequest, AnalysisResult, AnalysisType, AnalysisContext,
-    ScriptComponents, Language, ScriptSource, OutputLanguage,
-};
-use crate::analyzer::llm_client::{LlmProvider, create_llm_client};
+use crate::analyzer::llm_client::{create_llm_client, LlmProvider};
 use crate::error::EbiError;
+use crate::models::{
+    AnalysisContext, AnalysisRequest, AnalysisResult, AnalysisType, Language, OutputLanguage,
+    ScriptComponents, ScriptSource,
+};
+use futures::future::join_all;
 use std::sync::Arc;
 use tokio::time::{timeout, Duration};
-use futures::future::join_all;
 
 pub struct AnalysisOrchestrator {
     llm_client: Arc<dyn LlmProvider + Send + Sync>,
@@ -58,6 +58,7 @@ impl AnalysisOrchestrator {
             timeout_seconds: self.default_timeout.as_secs(),
             output_language: output_language.clone(),
         };
+        self.debug_log_request(&code_request);
         requests.push(code_request);
 
         // Perform injection analysis if there are comments or string literals
@@ -71,6 +72,7 @@ impl AnalysisOrchestrator {
                 timeout_seconds: self.default_timeout.as_secs(),
                 output_language: output_language.clone(),
             };
+            self.debug_log_request(&injection_request);
             requests.push(injection_request);
         }
 
@@ -79,26 +81,35 @@ impl AnalysisOrchestrator {
         let initial_results = self.execute_parallel_analysis(requests).await?;
 
         // Check if we need detailed analysis for high-risk findings
-        let needs_detailed_analysis = self.should_perform_detailed_analysis(&initial_results, components);
+        let needs_detailed_analysis =
+            self.should_perform_detailed_analysis(&initial_results, components);
 
         if needs_detailed_analysis {
             eprintln!("  ⚠️  High-risk patterns detected - performing detailed analysis...");
-            let detailed_results = self.perform_detailed_analysis(
-                &initial_results,
-                components,
-                language,
-                source,
-                model,
-                output_language
-            ).await?;
+            let detailed_results = self
+                .perform_detailed_analysis(
+                    &initial_results,
+                    components,
+                    language,
+                    source,
+                    model,
+                    output_language,
+                )
+                .await?;
 
             // Combine initial and detailed results
             let mut combined_results = initial_results;
             combined_results.extend(detailed_results);
-            eprintln!("  ✅ Analysis complete ({} total findings)", combined_results.len());
+            eprintln!(
+                "  ✅ Analysis complete ({} total findings)",
+                combined_results.len()
+            );
             Ok(combined_results)
         } else {
-            eprintln!("  ✅ Analysis complete ({} findings)", initial_results.len());
+            eprintln!(
+                "  ✅ Analysis complete ({} findings)",
+                initial_results.len()
+            );
             Ok(initial_results)
         }
     }
@@ -113,21 +124,22 @@ impl AnalysisOrchestrator {
         // 2. There are multiple medium-risk findings
         // 3. There are many critical or high-risk nodes in static analysis
 
-        let has_high_risk = results.iter().any(|r|
-            matches!(r.risk_level, crate::models::RiskLevel::High | crate::models::RiskLevel::Critical)
-        );
+        let has_high_risk = results.iter().any(|r| {
+            matches!(
+                r.risk_level,
+                crate::models::RiskLevel::High | crate::models::RiskLevel::Critical
+            )
+        });
 
-        let medium_risk_count = results.iter()
+        let medium_risk_count = results
+            .iter()
             .filter(|r| matches!(r.risk_level, crate::models::RiskLevel::Medium))
             .count();
 
         let critical_nodes = components.get_critical_nodes().len();
         let high_risk_nodes = components.get_high_risk_nodes().len();
 
-        has_high_risk ||
-        medium_risk_count >= 2 ||
-        critical_nodes >= 3 ||
-        high_risk_nodes >= 5
+        has_high_risk || medium_risk_count >= 2 || critical_nodes >= 3 || high_risk_nodes >= 5
     }
 
     async fn perform_detailed_analysis(
@@ -149,7 +161,8 @@ impl AnalysisOrchestrator {
         let mut detailed_requests = Vec::new();
 
         // Extract initial findings for context
-        let _initial_findings: Vec<String> = initial_results.iter()
+        let _initial_findings: Vec<String> = initial_results
+            .iter()
             .map(|r| format!("{:?}: {}", r.analysis_type, r.summary))
             .collect();
 
@@ -162,6 +175,7 @@ impl AnalysisOrchestrator {
             timeout_seconds: self.default_timeout.as_secs(),
             output_language: output_language.clone(),
         };
+        self.debug_log_request(&detailed_risk_request);
         detailed_requests.push(detailed_risk_request);
 
         // Specific threat analysis focusing on high-risk lines
@@ -175,6 +189,7 @@ impl AnalysisOrchestrator {
                 timeout_seconds: self.default_timeout.as_secs(),
                 output_language: output_language.clone(),
             };
+            self.debug_log_request(&threat_analysis_request);
             detailed_requests.push(threat_analysis_request);
         }
 
@@ -186,7 +201,10 @@ impl AnalysisOrchestrator {
 
         // Extract line numbers from critical and high-risk nodes
         for node in &components.metadata.priority_nodes {
-            if matches!(node.security_relevance, crate::models::SecurityRelevance::Critical | crate::models::SecurityRelevance::High) {
+            if matches!(
+                node.security_relevance,
+                crate::models::SecurityRelevance::Critical | crate::models::SecurityRelevance::High
+            ) {
                 high_risk_lines.push(node.line_start);
             }
         }
@@ -207,9 +225,7 @@ impl AnalysisOrchestrator {
 
         // Split requests into batches to respect concurrency limit
         let mut results = Vec::new();
-        let chunks: Vec<_> = requests
-            .chunks(self.max_concurrent_requests)
-            .collect();
+        let chunks: Vec<_> = requests.chunks(self.max_concurrent_requests).collect();
 
         for chunk in chunks {
             let batch_futures: Vec<_> = chunk
@@ -234,7 +250,7 @@ impl AnalysisOrchestrator {
         // Ensure we have at least one result
         if results.is_empty() {
             return Err(EbiError::LlmClientError(
-                "All analysis requests failed".to_string()
+                "All analysis requests failed".to_string(),
             ));
         }
 
@@ -247,16 +263,14 @@ impl AnalysisOrchestrator {
     ) -> Result<AnalysisResult, EbiError> {
         // Apply timeout to the entire analysis operation
         timeout(
-            Duration::from_secs(request.timeout_seconds)
-                .min(self.default_timeout),
-            self.llm_client.analyze(request)
+            Duration::from_secs(request.timeout_seconds).min(self.default_timeout),
+            self.llm_client.analyze(request),
         )
         .await
         .map_err(|_| EbiError::AnalysisTimeout {
-            timeout: request.timeout_seconds
+            timeout: request.timeout_seconds,
         })?
     }
-
 
     pub async fn quick_analysis(
         &self,
@@ -289,22 +303,23 @@ impl AnalysisOrchestrator {
         // Validate content length
         if request.content.is_empty() {
             return Err(EbiError::InvalidArguments(
-                "Analysis content cannot be empty".to_string()
+                "Analysis content cannot be empty".to_string(),
             ));
         }
 
         // Check if content is too long (rough token estimation)
         let estimated_tokens = request.content.len() / 4;
-        if estimated_tokens > 100000 { // ~100k tokens
+        if estimated_tokens > 100000 {
+            // ~100k tokens
             return Err(EbiError::InvalidArguments(
-                "Content too long for analysis".to_string()
+                "Content too long for analysis".to_string(),
             ));
         }
 
         // Validate timeout
         if request.timeout_seconds < 10 || request.timeout_seconds > 300 {
             return Err(EbiError::InvalidArguments(
-                "Timeout must be between 10 and 300 seconds".to_string()
+                "Timeout must be between 10 and 300 seconds".to_string(),
             ));
         }
 
@@ -329,7 +344,7 @@ impl AnalysisOrchestrator {
         // Try a quick test analysis
         timeout(
             Duration::from_secs(30),
-            self.llm_client.analyze(&test_request)
+            self.llm_client.analyze(&test_request),
         )
         .await
         .map_err(|_| EbiError::AnalysisTimeout { timeout: 30 })?
@@ -352,6 +367,22 @@ impl AnalysisOrchestrator {
     pub fn update_concurrency(&mut self, max_concurrent: usize) {
         self.max_concurrent_requests = max_concurrent.max(1); // Ensure at least 1
     }
+
+    fn debug_log_request(&self, request: &AnalysisRequest) {
+        if std::env::var("EBI_DEBUG").is_ok() {
+            let preview = request.content.chars().take(600).collect::<String>();
+            eprintln!(
+                "\n📝 LLM PROMPT [{}]\nModel: {}\nLength: {} chars\n{}",
+                request.analysis_type.as_str(),
+                request.model,
+                request.content.len(),
+                preview
+            );
+            if request.content.len() > 600 {
+                eprintln!("... (truncated preview)");
+            }
+        }
+    }
 }
 
 // Helper functions for creating orchestrators with common configurations
@@ -373,7 +404,9 @@ impl AnalysisOrchestrator {
 mod tests {
     use super::*;
     use crate::analyzer::llm_client::LlmProvider;
-    use crate::models::{AnalysisContext, AnalysisRequest, AnalysisResult, AnalysisType, ScriptSource, Language};
+    use crate::models::{
+        AnalysisContext, AnalysisRequest, AnalysisResult, AnalysisType, Language, ScriptSource,
+    };
     use std::future::Future;
     use std::pin::Pin;
     use std::sync::Arc;
@@ -385,13 +418,10 @@ mod tests {
             &'a self,
             request: &'a AnalysisRequest,
         ) -> Pin<Box<dyn Future<Output = Result<AnalysisResult, EbiError>> + Send + 'a>> {
-            let response = AnalysisResult::new(
-                request.analysis_type.clone(),
-                "mock-model".to_string(),
-                5,
-            )
-            .with_summary("Mock analysis".to_string())
-            .with_confidence(0.9);
+            let response =
+                AnalysisResult::new(request.analysis_type.clone(), "mock-model".to_string(), 5)
+                    .with_summary("Mock analysis".to_string())
+                    .with_confidence(0.9);
 
             Box::pin(async move { Ok(response) })
         }
@@ -417,7 +447,10 @@ mod tests {
     async fn test_orchestrator_creation() {
         let orchestrator = mock_orchestrator();
         assert_eq!(orchestrator.max_concurrent_requests, 2);
-        assert_eq!(orchestrator.llm_client.get_timeout(), Duration::from_secs(30));
+        assert_eq!(
+            orchestrator.llm_client.get_timeout(),
+            Duration::from_secs(30)
+        );
     }
 
     #[test]
@@ -438,7 +471,9 @@ mod tests {
             output_language: OutputLanguage::English,
         };
 
-        assert!(orchestrator.validate_analysis_request(&valid_request).is_ok());
+        assert!(orchestrator
+            .validate_analysis_request(&valid_request)
+            .is_ok());
 
         let invalid_request = AnalysisRequest {
             analysis_type: AnalysisType::CodeVulnerability,
@@ -454,7 +489,9 @@ mod tests {
             output_language: OutputLanguage::English,
         };
 
-        assert!(orchestrator.validate_analysis_request(&invalid_request).is_err());
+        assert!(orchestrator
+            .validate_analysis_request(&invalid_request)
+            .is_err());
     }
 
     #[test]

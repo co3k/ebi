@@ -297,7 +297,10 @@ mod tests {
 
         let _guard = env_lock().lock().unwrap();
         std::env::set_var("LANG", "en_US.UTF-8");
-        let cli = crate::cli::args::Cli::try_parse_from(vec!["ebi", "bash"]).unwrap();
+        std::env::set_var("LC_ALL", "en_US.UTF-8");
+        let cli =
+            crate::cli::args::Cli::try_parse_from(vec!["ebi", "--output-lang", "english", "bash"])
+                .unwrap();
         let formatter = ReportFormatter::new(&cli).unwrap();
 
         let formatted = formatter.format_analysis_report(&report);
@@ -316,6 +319,7 @@ mod tests {
         );
 
         std::env::remove_var("LANG");
+        std::env::remove_var("LC_ALL");
     }
 
     #[test]
@@ -328,7 +332,14 @@ mod tests {
 
         let _guard = env_lock().lock().unwrap();
         std::env::set_var("LANG", "en_US.UTF-8");
-        let cli = crate::cli::args::Cli::try_parse_from(vec!["ebi", "python"]).unwrap();
+        std::env::set_var("LC_ALL", "en_US.UTF-8");
+        let cli = crate::cli::args::Cli::try_parse_from(vec![
+            "ebi",
+            "--output-lang",
+            "english",
+            "python",
+        ])
+        .unwrap();
         let formatter = ReportFormatter::new(&cli).unwrap();
 
         let summary = formatter.format_compact_summary(&report);
@@ -338,13 +349,17 @@ mod tests {
         assert!(summary.contains("BLOCKED"), "summary: {}", summary);
 
         std::env::remove_var("LANG");
+        std::env::remove_var("LC_ALL");
     }
 
     #[test]
     fn test_error_formatting() {
         let _guard = env_lock().lock().unwrap();
         std::env::set_var("LANG", "en_US.UTF-8");
-        let cli = crate::cli::args::Cli::try_parse_from(vec!["ebi", "bash"]).unwrap();
+        std::env::set_var("LC_ALL", "en_US.UTF-8");
+        let cli =
+            crate::cli::args::Cli::try_parse_from(vec!["ebi", "--output-lang", "english", "bash"])
+                .unwrap();
         let formatter = ReportFormatter::new(&cli).unwrap();
 
         let error = crate::error::EbiError::AnalysisTimeout { timeout: 60 };
@@ -354,13 +369,17 @@ mod tests {
         assert!(formatted.contains("blocked"), "error: {}", formatted);
 
         std::env::remove_var("LANG");
+        std::env::remove_var("LC_ALL");
     }
 
     #[test]
     fn test_color_handling() {
         let _guard = env_lock().lock().unwrap();
         std::env::set_var("LANG", "en_US.UTF-8");
-        let cli = crate::cli::args::Cli::try_parse_from(vec!["ebi", "bash"]).unwrap();
+        std::env::set_var("LC_ALL", "en_US.UTF-8");
+        let cli =
+            crate::cli::args::Cli::try_parse_from(vec!["ebi", "--output-lang", "english", "bash"])
+                .unwrap();
         let formatter = ReportFormatter::new(&cli).unwrap();
 
         // This test will vary based on environment variables
@@ -369,5 +388,6 @@ mod tests {
         assert!(risk_formatted.contains("CRITICAL"));
 
         std::env::remove_var("LANG");
+        std::env::remove_var("LC_ALL");
     }
 }

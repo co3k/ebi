@@ -41,10 +41,51 @@ struct ChatMessage {
     content: String,
 }
 
+#[derive(Debug, Serialize)]
+struct ResponsesApiRequest {
+    model: String,
+    input: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning: Option<ResponsesReasoning>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    text: Option<ResponsesText>,
+}
+
+#[derive(Debug, Serialize)]
+struct ResponsesReasoning {
+    effort: String,
+}
+
+#[derive(Debug, Serialize)]
+struct ResponsesText {
+    verbosity: String,
+}
+
 #[derive(Debug, Deserialize)]
 struct LlmApiResponse {
     choices: Vec<Choice>,
     usage: Option<Usage>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ResponsesApiResponse {
+    #[serde(default)]
+    output: Vec<ResponsesOutput>,
+    #[serde(default)]
+    output_text: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ResponsesOutput {
+    #[serde(default)]
+    content: Vec<ResponsesContent>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ResponsesContent {
+    #[serde(rename = "type")]
+    content_type: String,
+    text: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -105,11 +146,20 @@ fn extract_summary_from_response(response: &str) -> String {
         .iter()
         .filter(|line| {
             let line_clean = line.trim();
-            !line_clean.is_empty()
-                && line_clean.len() > 20
-                && !line_clean.starts_with('#')
-                && !line_clean.to_uppercase().starts_with("RISK LEVEL:")
-                && !line_clean.to_uppercase().starts_with("CONFIDENCE:")
+            if line_clean.is_empty() {
+                return false;
+            }
+
+            if line_clean.starts_with('#') {
+                return false;
+            }
+
+            let uppercase = line_clean.to_uppercase();
+            if uppercase.starts_with("RISK LEVEL:") || uppercase.starts_with("CONFIDENCE:") {
+                return false;
+            }
+
+            true
         })
         .take(6)
         .copied()
@@ -128,7 +178,28 @@ fn extract_summary_from_response(response: &str) -> String {
         meaningful_lines.join("\n").chars().take(1200).collect()
     };
 
-    clean_summary_text(raw_summary)
+    let mut summary = clean_summary_text(raw_summary);
+
+    if summary.trim().len() < 5 {
+        summary = response
+            .lines()
+            .filter(|line| {
+                let trimmed = line.trim();
+                !trimmed.is_empty()
+                    && !trimmed.to_uppercase().starts_with("RISK LEVEL:")
+                    && !trimmed.to_uppercase().starts_with("CONFIDENCE:")
+            })
+            .take(6)
+            .map(|line| line.replace('|', " "))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        if summary.trim().is_empty() {
+            summary = "Summary not provided by model.".to_string();
+        }
+    }
+
+    summary
 }
 
 fn parse_explicit_risk_level(line: &str) -> Option<crate::models::RiskLevel> {
@@ -379,6 +450,7 @@ fn clean_summary_text(summary: String) -> String {
         let sanitized = trimmed
             .replace("**", "")
             .replace('`', "")
+            .replace('|', " ")
             .trim()
             .to_string();
 
@@ -419,7 +491,25 @@ fn clean_summary_text(summary: String) -> String {
     }
 
     if cleaned.is_empty() {
-        return summary;
+        let fallback = summary
+            .lines()
+            .filter_map(|line| {
+                let trimmed = line.trim();
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(trimmed.replace("**", "").replace('`', ""))
+                }
+            })
+            .take(5)
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        if fallback.is_empty() {
+            return summary.chars().take(400).collect();
+        }
+
+        return fallback.chars().take(800).collect();
     }
 
     while cleaned.last().map(|s| s.is_empty()).unwrap_or(false) {
@@ -427,7 +517,16 @@ fn clean_summary_text(summary: String) -> String {
     }
 
     let combined = cleaned.join("\n");
-    combined.chars().take(1000).collect()
+    if combined.trim().is_empty() {
+        "Summary not provided by model.".to_string()
+    } else {
+        combined.chars().take(1000).collect()
+    }
+}
+
+fn is_responses_model(model: &str) -> bool {
+    let candidate = model.to_lowercase();
+    candidate.starts_with("gpt-5")
 }
 
 pub struct OpenAiCompatibleClient {
@@ -449,8 +548,20 @@ impl OpenAiCompatibleClient {
 
     async fn make_api_request(&self, request: &AnalysisRequest) -> Result<String, EbiError> {
         let prompt = self.build_prompt(request);
-        let api_request =
-            self.build_api_request(prompt, &request.analysis_type, &request.output_language);
+        let use_responses_api = is_responses_model(&self.config.model_name);
+        let chat_request;
+        let responses_request;
+        if use_responses_api {
+            chat_request = None;
+            responses_request = Some(self.build_responses_request(prompt, &request.analysis_type));
+        } else {
+            chat_request = Some(self.build_api_request(
+                prompt,
+                &request.analysis_type,
+                &request.output_language,
+            ));
+            responses_request = None;
+        }
 
         let mut retries = 0;
         loop {
@@ -460,8 +571,13 @@ impl OpenAiCompatibleClient {
             let mut http_request = self
                 .client
                 .post(&self.config.api_endpoint)
-                .header("Content-Type", "application/json")
-                .json(&api_request);
+                .header("Content-Type", "application/json");
+
+            if let Some(ref req) = chat_request {
+                http_request = http_request.json(req);
+            } else if let Some(ref req) = responses_request {
+                http_request = http_request.json(req);
+            }
 
             if let Some(ref api_key) = self.config.api_key {
                 if !api_key.is_empty() {
@@ -475,16 +591,44 @@ impl OpenAiCompatibleClient {
             match response {
                 Ok(Ok(resp)) => {
                     if resp.status().is_success() {
-                        let api_response: LlmApiResponse = resp.json().await.map_err(|e| {
-                            EbiError::LlmClientError(format!("Failed to parse response: {}", e))
-                        })?;
+                        if use_responses_api {
+                            let api_response: ResponsesApiResponse =
+                                resp.json().await.map_err(|e| {
+                                    EbiError::LlmClientError(format!(
+                                        "Failed to parse response: {}",
+                                        e
+                                    ))
+                                })?;
 
-                        if let Some(choice) = api_response.choices.first() {
-                            return Ok(choice.message.content.clone());
+                            if let Some(text) = api_response.output_text {
+                                if !text.trim().is_empty() {
+                                    return Ok(text);
+                                }
+                            }
+
+                            for output in api_response.output {
+                                for piece in output.content {
+                                    if piece.content_type == "output_text" {
+                                        if let Some(text) = piece.text {
+                                            return Ok(text);
+                                        }
+                                    }
+                                }
+                            }
+
+                            return Ok(String::new());
                         } else {
-                            return Err(EbiError::LlmClientError(
-                                "No response choices received".to_string(),
-                            ));
+                            let api_response: LlmApiResponse = resp.json().await.map_err(|e| {
+                                EbiError::LlmClientError(format!("Failed to parse response: {}", e))
+                            })?;
+
+                            if let Some(choice) = api_response.choices.first() {
+                                return Ok(choice.message.content.clone());
+                            } else {
+                                return Err(EbiError::LlmClientError(
+                                    "No response choices received".to_string(),
+                                ));
+                            }
                         }
                     } else {
                         let status = resp.status();
@@ -575,6 +719,23 @@ impl OpenAiCompatibleClient {
             analysis_type,
             output_language,
         )
+    }
+
+    fn build_responses_request(
+        &self,
+        prompt: String,
+        _analysis_type: &AnalysisType,
+    ) -> ResponsesApiRequest {
+        ResponsesApiRequest {
+            model: self.config.model_name.clone(),
+            input: prompt,
+            reasoning: Some(ResponsesReasoning {
+                effort: "minimal".to_string(),
+            }),
+            text: Some(ResponsesText {
+                verbosity: "low".to_string(),
+            }),
+        }
     }
 }
 
@@ -1175,10 +1336,17 @@ pub fn create_llm_client(
     let (api_endpoint, actual_model) = if let Some(endpoint) = endpoint_override {
         (endpoint, trimmed_model.to_string())
     } else if is_openai_model(trimmed_model) {
-        (
-            "https://api.openai.com/v1/chat/completions".to_string(),
-            trimmed_model.to_string(),
-        )
+        if is_responses_model(trimmed_model) {
+            (
+                "https://api.openai.com/v1/responses".to_string(),
+                trimmed_model.to_string(),
+            )
+        } else {
+            (
+                "https://api.openai.com/v1/chat/completions".to_string(),
+                trimmed_model.to_string(),
+            )
+        }
     } else if is_claude_model(trimmed_model) {
         (
             "https://api.anthropic.com/v1/messages".to_string(),

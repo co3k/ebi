@@ -222,9 +222,13 @@ impl AnalysisAggregator {
                 static_risk
             };
 
-        let mut overall = std::cmp::max(llm_risk, adjusted_static_risk);
+        let mut overall = std::cmp::max(llm_risk.clone(), adjusted_static_risk);
 
         if matches!(combined_legitimacy, Some(LegitimacyHint::Legitimate)) {
+            overall = std::cmp::min(overall, RiskLevel::Medium);
+        }
+
+        if llm_risk <= RiskLevel::Low {
             overall = std::cmp::min(overall, RiskLevel::Medium);
         }
 
@@ -495,7 +499,11 @@ impl Default for AnalysisAggregator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::{ExecutionRecommendation, Language, ScriptComponents};
+    use crate::models::components::{NodeInfo, SecurityRelevance};
+    use crate::models::{
+        AnalysisResult, AnalysisType, ExecutionRecommendation, Language, RiskLevel,
+        ScriptComponents, ScriptInfo,
+    };
 
     #[test]
     fn test_risk_calculation() {
@@ -546,5 +554,45 @@ mod tests {
         assert!(!warnings.is_empty());
         assert!(warnings.iter().any(|w| w.contains("Low confidence")));
         assert!(warnings.iter().any(|w| w.contains("too brief")));
+    }
+
+    #[test]
+    fn test_low_llm_risk_limits_static_risk() {
+        let aggregator = AnalysisAggregator::new();
+
+        let script_info = ScriptInfo::new(Language::Bash, 100, 40);
+        let mut components = ScriptComponents::new();
+        components.metadata.priority_nodes.push(NodeInfo {
+            node_type: "command_substitution".to_string(),
+            line_start: 12,
+            line_end: 12,
+            security_relevance: SecurityRelevance::Critical,
+        });
+
+        let code_result = AnalysisResult::new(
+            AnalysisType::CodeVulnerability,
+            "test-model".to_string(),
+            100,
+        )
+        .with_risk_level(RiskLevel::Info)
+        .with_summary("No significant security concerns identified.".to_string())
+        .with_confidence(0.6);
+
+        let injection_result = AnalysisResult::new(
+            AnalysisType::InjectionDetection,
+            "test-model".to_string(),
+            120,
+        )
+        .with_risk_level(RiskLevel::Info)
+        .with_summary("No injection or social-engineering risks identified.".to_string())
+        .with_confidence(0.6);
+
+        let report = AnalysisReport::new(script_info)
+            .with_code_analysis(code_result)
+            .with_injection_analysis(injection_result);
+
+        let overall = aggregator.calculate_overall_risk(&report, &components);
+
+        assert!(overall <= RiskLevel::Medium);
     }
 }

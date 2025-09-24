@@ -1,17 +1,17 @@
 pub mod args;
-pub mod reporter;
 pub mod prompt;
+pub mod reporter;
 
 pub use args::Cli;
-pub use reporter::ReportFormatter;
 pub use prompt::UserPrompter;
+pub use reporter::ReportFormatter;
 
-use std::io::{self, Read};
+use crate::analyzer::{AnalysisAggregator, AnalysisOrchestrator};
 use crate::error::EbiError;
-use crate::models::{Script, ScriptSource, AnalysisReport, ExecutionDecision, ScriptInfo};
 use crate::executor::ExecutionConfig;
+use crate::models::{AnalysisReport, ExecutionDecision, Script, ScriptInfo, ScriptSource};
 use crate::parser::ComponentExtractor;
-use crate::analyzer::{AnalysisOrchestrator, AnalysisAggregator};
+use std::io::{self, Read};
 
 pub struct CliHandler {
     cli: Cli,
@@ -23,8 +23,18 @@ impl CliHandler {
     }
 
     pub async fn run(&self) -> Result<i32, EbiError> {
+        if self.cli.is_debug() {
+            std::env::set_var("EBI_DEBUG", "1");
+        } else {
+            std::env::remove_var("EBI_DEBUG");
+        }
+
         // Create a progress reporter
-        let progress = UserPrompter::new(None, self.cli.should_use_color(), self.cli.get_output_language()?);
+        let progress = UserPrompter::new(
+            None,
+            self.cli.should_use_color(),
+            self.cli.get_output_language()?,
+        );
 
         // Step 1: Read script from stdin
         progress.display_step(1, 7, "Reading script from stdin...");
@@ -55,7 +65,11 @@ impl CliHandler {
         }
 
         // Step 3: Parse script components using integrated parser
-        progress.display_step(3, 7, "Parsing script structure and extracting components...");
+        progress.display_step(
+            3,
+            7,
+            "Parsing script structure and extracting components...",
+        );
         let components = self.parse_script_components(&script).await?;
 
         if self.cli.is_verbose() {
@@ -68,7 +82,14 @@ impl CliHandler {
         }
 
         // Step 4: Perform LLM analysis using integrated analyzer
-        progress.display_step(4, 7, &format!("Analyzing with {} (this may take a while)...", self.cli.get_llm_model()));
+        progress.display_step(
+            4,
+            7,
+            &format!(
+                "Analyzing with {} (this may take a while)...",
+                self.cli.get_llm_model()
+            ),
+        );
         progress.display_spinner_start("Waiting for LLM response");
         let analysis_report = match self.analyze_script(&script, &components).await {
             Ok(report) => {
@@ -129,7 +150,10 @@ impl CliHandler {
         Ok(buffer)
     }
 
-    async fn parse_script_components(&self, script: &Script) -> Result<crate::models::ScriptComponents, EbiError> {
+    async fn parse_script_components(
+        &self,
+        script: &Script,
+    ) -> Result<crate::models::ScriptComponents, EbiError> {
         let extractor = ComponentExtractor::new();
         extractor.extract_from_script(&script.content, script.language.clone())
     }
@@ -140,7 +164,10 @@ impl CliHandler {
         components: &crate::models::ScriptComponents,
     ) -> Result<AnalysisReport, EbiError> {
         if self.cli.is_verbose() {
-            eprintln!("🤖 Starting LLM analysis with model: {}", self.cli.get_llm_model());
+            eprintln!(
+                "🤖 Starting LLM analysis with model: {}",
+                self.cli.get_llm_model()
+            );
         }
 
         // Create script info
@@ -161,13 +188,32 @@ impl CliHandler {
 
         // Perform LLM analysis
         let output_language = self.cli.get_output_language()?;
-        let analysis_results = orchestrator.analyze_script_components(
-            components,
-            &script.language,
-            &ScriptSource::Stdin,
-            self.cli.get_llm_model(),
-            &output_language,
-        ).await?;
+        let analysis_results = orchestrator
+            .analyze_script_components(
+                components,
+                &script.language,
+                &ScriptSource::Stdin,
+                self.cli.get_llm_model(),
+                &output_language,
+            )
+            .await?;
+
+        if self.cli.is_debug() {
+            for result in &analysis_results {
+                if let Some(ref details) = result.details {
+                    eprintln!(
+                        "\n🧪 RAW LLM RESPONSE [{}]:\n{}\n",
+                        result.analysis_type.as_str(),
+                        details
+                    );
+                } else {
+                    eprintln!(
+                        "\n🧪 RAW LLM RESPONSE [{}]: <no details provided>\n",
+                        result.analysis_type.as_str()
+                    );
+                }
+            }
+        }
 
         // Aggregate the results
         let aggregator = AnalysisAggregator::new();
@@ -179,20 +225,22 @@ impl CliHandler {
         )?;
 
         if self.cli.is_verbose() {
-            eprintln!("📊 Analysis complete - Risk level: {}", report.overall_risk.as_str());
+            eprintln!(
+                "📊 Analysis complete - Risk level: {}",
+                report.overall_risk.as_str()
+            );
         }
 
         Ok(report)
     }
-
 
     async fn execute_script(
         &self,
         script: &Script,
         _decision: &ExecutionDecision,
     ) -> Result<i32, EbiError> {
-        use std::process::{Command, Stdio};
         use std::io::Write;
+        use std::process::{Command, Stdio};
 
         // Create execution config
         let config = ExecutionConfig::new(
@@ -218,18 +266,23 @@ impl CliHandler {
 
         // Write the original script to the command's stdin
         if let Some(mut stdin) = child.stdin.take() {
-            stdin.write_all(script.content.as_bytes())
+            stdin
+                .write_all(script.content.as_bytes())
                 .map_err(|e| EbiError::ExecutionFailed(e.to_string()))?;
         }
 
         // Wait for the command to complete
-        let output = child.wait()
+        let output = child
+            .wait()
             .map_err(|e| EbiError::ExecutionFailed(e.to_string()))?;
 
         let exit_code = output.code().unwrap_or(1);
 
         if self.cli.is_verbose() {
-            eprintln!("🏁 Script execution completed with exit code: {}", exit_code);
+            eprintln!(
+                "🏁 Script execution completed with exit code: {}",
+                exit_code
+            );
         }
 
         Ok(exit_code)
@@ -240,7 +293,8 @@ impl CliHandler {
         if model.starts_with("gpt-")
             || model.starts_with("o1-")
             || model.starts_with("o3-")
-            || model.starts_with("o4-") {
+            || model.starts_with("o4-")
+        {
             std::env::var("OPENAI_API_KEY").ok()
         } else if model.starts_with("gemini-") {
             std::env::var("GEMINI_API_KEY").ok()

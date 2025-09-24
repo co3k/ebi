@@ -189,6 +189,12 @@ mod tests {
         ENV_LOCK.get_or_init(|| Mutex::new(()))
     }
 
+    fn clear_locale_env() {
+        for var in ["LC_ALL", "LC_MESSAGES", "LANG", "LANGUAGE"] {
+            std::env::remove_var(var);
+        }
+    }
+
     #[test]
     fn test_basic_cli_parsing() {
         let args = vec!["ebi", "bash"];
@@ -315,6 +321,7 @@ mod tests {
     #[test]
     fn test_output_language_parsing() {
         let _guard = env_lock().lock().unwrap();
+        clear_locale_env();
         let args = vec!["ebi", "--output-lang", "japanese", "bash"];
         let cli = Cli::try_parse_from(args).unwrap();
 
@@ -326,6 +333,7 @@ mod tests {
     #[test]
     fn test_output_language_validation() {
         let _guard = env_lock().lock().unwrap();
+        clear_locale_env();
         std::env::remove_var("EBI_OUTPUT_LANGUAGE");
         let args = vec!["ebi", "--output-lang", "invalid", "bash"];
         let cli = Cli::try_parse_from(args).unwrap();
@@ -336,6 +344,7 @@ mod tests {
     #[test]
     fn test_environment_variable_override() {
         let _guard = env_lock().lock().unwrap();
+        clear_locale_env();
         // Test that environment variable overrides CLI option
         std::env::set_var("EBI_OUTPUT_LANGUAGE", "japanese");
 
@@ -351,6 +360,7 @@ mod tests {
     #[test]
     fn test_environment_variable_invalid() {
         let _guard = env_lock().lock().unwrap();
+        clear_locale_env();
         std::env::set_var("EBI_OUTPUT_LANGUAGE", "invalid");
 
         let args = vec!["ebi", "bash"];
@@ -365,8 +375,10 @@ mod tests {
     #[test]
     fn test_locale_detection_priority() {
         let _guard = env_lock().lock().unwrap();
+        clear_locale_env();
         std::env::remove_var("EBI_OUTPUT_LANGUAGE");
         // Test that locale detection works when no explicit language is set
+        std::env::set_var("LC_ALL", "ja_JP.UTF-8");
         std::env::set_var("LANG", "ja_JP.UTF-8");
 
         let args = vec!["ebi", "bash"]; // No --output-lang specified
@@ -375,14 +387,17 @@ mod tests {
         assert_eq!(cli.get_output_language().unwrap(), OutputLanguage::Japanese);
 
         // Clean up
+        std::env::remove_var("LC_ALL");
         std::env::remove_var("LANG");
     }
 
     #[test]
     fn test_locale_detection_with_explicit_option() {
         let _guard = env_lock().lock().unwrap();
+        clear_locale_env();
         std::env::remove_var("EBI_OUTPUT_LANGUAGE");
         // Test that explicit CLI option overrides locale detection
+        std::env::set_var("LC_ALL", "ja_JP.UTF-8");
         std::env::set_var("LANG", "ja_JP.UTF-8");
 
         let args = vec!["ebi", "--output-lang", "english", "bash"];
@@ -391,12 +406,14 @@ mod tests {
         assert_eq!(cli.get_output_language().unwrap(), OutputLanguage::English);
 
         // Clean up
+        std::env::remove_var("LC_ALL");
         std::env::remove_var("LANG");
     }
 
     #[test]
     fn test_language_debug_info() {
         let _guard = env_lock().lock().unwrap();
+        clear_locale_env();
         let args = vec!["ebi", "bash"];
         let cli = Cli::try_parse_from(args).unwrap();
 

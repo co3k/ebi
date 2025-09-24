@@ -205,7 +205,7 @@ impl UserPrompter {
                 }
                 Err(mpsc::TryRecvError::Empty) => {
                     if start_time.elapsed() >= timeout {
-                        println!("\n⏰ Input timeout reached. Defaulting to decline for safety.");
+                        println!("\n🦐⏰ Input timeout reached. Defaulting to decline for safety.");
                         return Err(EbiError::UserInputTimeout);
                     }
                     thread::sleep(Duration::from_millis(100));
@@ -224,7 +224,7 @@ impl UserPrompter {
             "review" | "details" | "show" | "more" => {
                 // For now, treat review as decline - in a full implementation,
                 // this would show detailed analysis and prompt again
-                println!("💡 Review functionality not yet implemented. Defaulting to decline for safety.");
+                println!("🦐💡 Review functionality not yet implemented. Defaulting to decline for safety.");
                 Ok(ExecutionDecision::decline())
             }
             "" => {
@@ -234,7 +234,7 @@ impl UserPrompter {
             _ => {
                 // Invalid response - ask again (with a retry limit)
                 println!(
-                    "❓ Please enter 'yes' to execute, 'no' to cancel, or 'review' for details."
+                    "🦐❓ Please enter 'yes' to execute, 'no' to cancel, or 'review' for details."
                 );
                 print!("Your choice: ");
                 io::stdout().flush().unwrap_or(());

@@ -10,7 +10,7 @@ async fn main() {
     let cli = match Cli::parse_args() {
         Ok(cli) => cli,
         Err(e) => {
-            eprintln!("❌ Argument parsing failed: {}", e);
+            eprintln!("🦐❌ Argument parsing failed: {}", e);
             process::exit(2);
         }
     };
@@ -22,7 +22,7 @@ async fn main() {
     let exit_code = match handler.run().await {
         Ok(code) => code,
         Err(e) => {
-            eprintln!("❌ Execution failed: {}", e);
+            eprintln!("🦐❌ Execution failed: {}", e);
             match e {
                 EbiError::UnknownLanguage | EbiError::ParseError(_) => 2,
                 EbiError::NoInput => 4,

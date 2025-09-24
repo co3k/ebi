@@ -128,7 +128,7 @@ impl ReportFormatter {
 
         if self.use_colors {
             format!(
-                "\x1b[1m\x1b[36m═══ {} ═══\x1b[0m\n\
+                "\x1b[1m\x1b[36m🦐 ═══ {} ═══ 🍤\x1b[0m\n\
                  {}: {} ({} lines, {} bytes)",
                 header_text,
                 script_text,
@@ -138,7 +138,7 @@ impl ReportFormatter {
             )
         } else {
             format!(
-                "=== {} ===\n\
+                "🦐 === {} === 🍤\n\
                  {}: {} ({} lines, {} bytes)",
                 header_text,
                 script_text,
@@ -258,16 +258,16 @@ impl ReportFormatter {
         let error_desc = self.localized_strings.get("desc_analysis_failure");
 
         format!(
-            "{}🚨 {}{}\n\n{}\n\n{}",
+            "{}🦐🚨 {}{}\n\n{}\n\n{}",
             color_code, error_title, reset, error, error_desc
         )
     }
 
     pub fn format_progress(&self, message: &str) -> String {
         if self.use_colors {
-            format!("\x1b[36m{}\x1b[0m", message)
+            format!("\x1b[36m🦐 {}\x1b[0m", message)
         } else {
-            message.to_string()
+            format!("🦐 {}", message)
         }
     }
 }

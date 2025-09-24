@@ -277,7 +277,7 @@ impl std::fmt::Display for AnalysisReport {
             f,
             "═══════════════════════════════════════════════════════════\n"
         )?;
-        write!(f, " EBI SECURITY ANALYSIS REPORT\n")?;
+        write!(f, "🦐 EBI SECURITY ANALYSIS REPORT 🍤\n")?;
         write!(
             f,
             "═══════════════════════════════════════════════════════════\n\n"

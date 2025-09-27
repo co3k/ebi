@@ -388,11 +388,11 @@ impl AnalysisOrchestrator {
 // Helper functions for creating orchestrators with common configurations
 impl AnalysisOrchestrator {
     pub fn for_development() -> Result<Self, EbiError> {
-        Self::new("gpt-5-mini", None, 60, 2)
+        Self::new("gpt-4o", None, 60, 2)
     }
 
     pub fn for_production(api_key: String) -> Result<Self, EbiError> {
-        Self::new("gpt-5-mini", Some(api_key), 120, 3)
+        Self::new("gpt-4o", Some(api_key), 120, 3)
     }
 
     pub fn for_testing() -> Result<Self, EbiError> {

@@ -14,7 +14,7 @@ pub struct Cli {
     pub lang: Option<String>,
 
     /// LLM model to use for analysis
-    #[arg(short = 'm', long, default_value = "gpt-5-mini")]
+    #[arg(short = 'm', long, default_value = "gpt-4o")]
     pub model: String,
 
     /// Maximum time for LLM analysis in seconds (10-300)
@@ -201,7 +201,7 @@ mod tests {
         let cli = Cli::try_parse_from(args).unwrap();
 
         assert_eq!(cli.command_and_args, vec!["bash"]);
-        assert_eq!(cli.model, "gpt-5-mini");
+        assert_eq!(cli.model, "gpt-4o");
         assert_eq!(cli.timeout, 300);
         assert!(cli.lang.is_none());
         assert!(!cli.verbose);

@@ -28,11 +28,16 @@ pub trait LlmProvider: Send + Sync {
 }
 
 fn extract_summary_from_response(response: &str) -> String {
+    if response.trim().is_empty() {
+        return "No response from model.".to_string();
+    }
+
     let lines: Vec<&str> = response.lines().collect();
 
+    // First, try to find explicit summary sections
     for (i, line) in lines.iter().enumerate() {
         let line_lower = line.to_lowercase();
-        if line_lower.contains("summary:") || line_lower.contains("概要:") {
+        if line_lower.contains("summary:") || line_lower.contains("概要:") || line_lower.contains("script purpose:") {
             let summary_lines: Vec<&str> = lines
                 .iter()
                 .skip(i + 1)
@@ -43,17 +48,21 @@ fn extract_summary_from_response(response: &str) -> String {
                     }
 
                     let lower = trimmed.to_lowercase();
-                    !lower.contains("analysis:") && !lower.contains("分析:")
+                    !lower.contains("analysis:") && !lower.contains("分析:") && !lower.contains("specific findings:")
                 })
                 .copied()
                 .collect();
 
             if !summary_lines.is_empty() {
-                return summary_lines.join("\n").trim().to_string();
+                let summary = summary_lines.join("\n").trim().to_string();
+                if !summary.is_empty() && summary.len() > 10 {
+                    return clean_summary_text(summary);
+                }
             }
         }
     }
 
+    // If no explicit summary found, extract meaningful content
     let meaningful_lines: Vec<&str> = lines
         .iter()
         .filter(|line| {
@@ -62,24 +71,33 @@ fn extract_summary_from_response(response: &str) -> String {
                 return false;
             }
 
-            if line_clean.starts_with('#') {
+            // Skip headers, metadata, and structural elements
+            if line_clean.starts_with('#') || line_clean.starts_with("```") {
                 return false;
             }
 
             let uppercase = line_clean.to_uppercase();
-            if uppercase.starts_with("RISK LEVEL:") || uppercase.starts_with("CONFIDENCE:") {
+            if uppercase.starts_with("RISK LEVEL:")
+                || uppercase.starts_with("CONFIDENCE:")
+                || uppercase.starts_with("MODEL:")
+                || uppercase.starts_with("→ CONCERN:")
+                || uppercase.starts_with("→ CONTEXT:")
+                || line_clean.starts_with("Line ") {
                 return false;
             }
 
-            true
+            // Include meaningful content lines
+            line_clean.len() > 10 && !line_clean.starts_with("Line ")
         })
-        .take(6)
+        .take(8)
         .copied()
         .collect();
 
     let raw_summary = if meaningful_lines.is_empty() {
+        // Fallback: take first non-empty lines
         response
             .lines()
+            .filter(|line| !line.trim().is_empty() && line.trim().len() > 5)
             .take(3)
             .collect::<Vec<_>>()
             .join("\n")
@@ -87,31 +105,36 @@ fn extract_summary_from_response(response: &str) -> String {
             .take(600)
             .collect()
     } else {
-        meaningful_lines.join("\n").chars().take(1200).collect()
+        meaningful_lines.join(" ").chars().take(1200).collect()
     };
 
-    let mut summary = clean_summary_text(raw_summary);
+    let summary = clean_summary_text(raw_summary);
 
-    if summary.trim().len() < 5 {
-        summary = response
+    if summary.trim().len() < 10 {
+        // Last resort: take any substantial content
+        let fallback = response
             .lines()
             .filter(|line| {
                 let trimmed = line.trim();
                 !trimmed.is_empty()
+                    && trimmed.len() > 15
                     && !trimmed.to_uppercase().starts_with("RISK LEVEL:")
                     && !trimmed.to_uppercase().starts_with("CONFIDENCE:")
+                    && !trimmed.starts_with("Line ")
+                    && !trimmed.starts_with("→")
             })
-            .take(6)
-            .map(|line| line.replace('|', " "))
+            .take(3)
             .collect::<Vec<_>>()
-            .join("\n");
+            .join(" ");
 
-        if summary.trim().is_empty() {
-            summary = "Summary not provided by model.".to_string();
+        if fallback.trim().len() > 10 {
+            clean_summary_text(fallback)
+        } else {
+            format!("Analysis completed for script content ({})", response.chars().take(50).collect::<String>().trim())
         }
+    } else {
+        summary
     }
-
-    summary
 }
 
 fn parse_explicit_risk_level(line: &str) -> Option<crate::models::RiskLevel> {
@@ -485,19 +508,28 @@ impl RigLlmClient {
 
         // Skip temperature for models that don't support it (like GPT-5 series and o1 series)
         if let Some(temp) = self.config.temperature {
-            if !self.config.model_name.starts_with("gpt-5") && !self.config.model_name.starts_with("o1") {
+            let model_name = &self.config.model_name;
+            if !model_name.starts_with("gpt-5") && !model_name.starts_with("o1") && !model_name.starts_with("o3") && !model_name.starts_with("o4") {
                 builder = builder.temperature(temp as f64);
             }
         }
 
+        // Set max_tokens with provider-specific defaults
         if let Some(max_tokens) = self.config.max_tokens {
             builder = builder.max_tokens(max_tokens as u64);
+        } else {
+            // Use provider-specific defaults
+            let default_tokens = match &self.provider {
+                RigProvider::Anthropic(_) => 4096, // Claude models typically need explicit max_tokens
+                _ => 1000,
+            };
+            builder = builder.max_tokens(default_tokens);
         }
 
         let response = builder
             .send()
             .await
-            .map_err(|e| EbiError::LlmClientError(format!("Request failed: {}", e)))?;
+            .map_err(|e| EbiError::LlmClientError(format!("Request failed for model {}: {}", self.config.model_name, e)))?;
 
         // Extract the text content from the response
         let mut extracted_text = String::new();
@@ -505,6 +537,14 @@ impl RigLlmClient {
             if let AssistantContent::Text(text_content) = content {
                 extracted_text.push_str(&text_content.text);
             }
+        }
+
+        // Handle empty responses
+        if extracted_text.trim().is_empty() {
+            return Err(EbiError::LlmClientError(
+                format!("Model {} returned empty response. Response had {} choice(s). This may indicate an API issue, authentication problem, or model configuration issue.",
+                    self.config.model_name, response.choice.len())
+            ));
         }
 
         Ok(extracted_text)

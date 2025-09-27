@@ -1,109 +1,21 @@
 use crate::error::EbiError;
 use crate::models::{AnalysisRequest, AnalysisResult, AnalysisType, OutputLanguage};
-use reqwest;
-use serde::{Deserialize, Serialize};
+use rig::completion::{CompletionModel, AssistantContent};
+use rig::providers::{anthropic, gemini, openai};
+use rig::client::CompletionClient;
 use std::collections::HashSet;
 use std::future::Future;
 use std::pin::Pin;
 use std::time::Duration;
-use tokio::time::timeout;
-
-// Constants for Claude API configuration
-const CLAUDE_DEFAULT_MAX_TOKENS: u32 = 1000;
-const CLAUDE_DEFAULT_TEMPERATURE: f32 = 0.3;
 
 #[derive(Debug, Clone)]
 pub struct LlmConfig {
     pub model_name: String,
-    pub api_endpoint: String,
     pub api_key: Option<String>,
     pub timeout_seconds: u64,
     pub max_retries: u32,
     pub max_tokens: Option<u32>,
     pub temperature: Option<f32>,
-}
-
-#[derive(Debug, Serialize)]
-struct LlmApiRequest {
-    model: String,
-    messages: Vec<ChatMessage>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    max_tokens: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    max_completion_tokens: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    temperature: Option<f32>,
-}
-
-#[derive(Debug, Serialize)]
-struct ChatMessage {
-    role: String,
-    content: String,
-}
-
-#[derive(Debug, Serialize)]
-struct ResponsesApiRequest {
-    model: String,
-    input: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    reasoning: Option<ResponsesReasoning>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    text: Option<ResponsesText>,
-}
-
-#[derive(Debug, Serialize)]
-struct ResponsesReasoning {
-    effort: String,
-}
-
-#[derive(Debug, Serialize)]
-struct ResponsesText {
-    verbosity: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct LlmApiResponse {
-    choices: Vec<Choice>,
-    usage: Option<Usage>,
-}
-
-#[derive(Debug, Deserialize)]
-struct ResponsesApiResponse {
-    #[serde(default)]
-    output: Vec<ResponsesOutput>,
-    #[serde(default)]
-    output_text: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct ResponsesOutput {
-    #[serde(default)]
-    content: Vec<ResponsesContent>,
-}
-
-#[derive(Debug, Deserialize)]
-struct ResponsesContent {
-    #[serde(rename = "type")]
-    content_type: String,
-    text: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct Choice {
-    message: ResponseMessage,
-    finish_reason: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct ResponseMessage {
-    content: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct Usage {
-    total_tokens: u32,
-    prompt_tokens: u32,
-    completion_tokens: u32,
 }
 
 pub trait LlmProvider: Send + Sync {
@@ -230,7 +142,6 @@ fn extract_risk_token(
     let marker_pos = lower_line.find(&marker_lower)?;
     let after_marker = &original_line[marker_pos + marker.len()..];
 
-    // Split on colon-like separators first, then take the leading token
     let token_section = after_marker
         .split(|c| c == ':' || c == '：')
         .nth(1)
@@ -524,903 +435,240 @@ fn clean_summary_text(summary: String) -> String {
     }
 }
 
-fn is_responses_model(model: &str) -> bool {
-    let candidate = model.to_lowercase();
-    candidate.starts_with("gpt-5")
-}
-
-pub struct OpenAiCompatibleClient {
+pub struct RigLlmClient {
     config: LlmConfig,
-    client: reqwest::Client,
+    provider: RigProvider,
 }
 
-impl OpenAiCompatibleClient {
-    pub fn new(config: LlmConfig) -> Result<Self, EbiError> {
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(config.timeout_seconds))
-            .build()
-            .map_err(|e| {
-                EbiError::LlmClientError(format!("Failed to create HTTP client: {}", e))
-            })?;
+enum RigProvider {
+    OpenAI(openai::Client),
+    OpenAIResponses(openai::Client),
+    Anthropic(anthropic::Client),
+    Gemini(gemini::Client),
+}
 
-        Ok(Self { config, client })
+impl RigLlmClient {
+    pub fn new(config: LlmConfig) -> Result<Self, EbiError> {
+        let provider = create_provider(&config)?;
+        Ok(Self { config, provider })
     }
 
     async fn make_api_request(&self, request: &AnalysisRequest) -> Result<String, EbiError> {
         let prompt = self.build_prompt(request);
-        let use_responses_api = is_responses_model(&self.config.model_name);
-        let chat_request;
-        let responses_request;
-        if use_responses_api {
-            chat_request = None;
-            responses_request = Some(self.build_responses_request(prompt, &request.analysis_type));
+        let system_prompt = self.build_system_prompt(&request.analysis_type, &request.output_language);
+
+        match &self.provider {
+            RigProvider::OpenAI(client) | RigProvider::OpenAIResponses(client) => {
+                let model = client.completion_model(&self.config.model_name);
+                self.send_completion_request(model, &prompt, system_prompt).await
+            }
+            RigProvider::Anthropic(client) => {
+                let model = client.completion_model(&self.config.model_name);
+                self.send_completion_request(model, &prompt, system_prompt).await
+            }
+            RigProvider::Gemini(client) => {
+                let model = client.completion_model(&self.config.model_name);
+                self.send_completion_request(model, &prompt, system_prompt).await
+            }
+        }
+    }
+
+    async fn send_completion_request<M: CompletionModel>(
+        &self,
+        model: M,
+        prompt: &str,
+        system_prompt: String,
+    ) -> Result<String, EbiError> {
+        let mut builder = model
+            .completion_request(prompt)
+            .preamble(system_prompt);
+
+        // Skip temperature for models that don't support it (like GPT-5 series and o1 series)
+        if let Some(temp) = self.config.temperature {
+            if !self.config.model_name.starts_with("gpt-5") && !self.config.model_name.starts_with("o1") {
+                builder = builder.temperature(temp as f64);
+            }
+        }
+
+        if let Some(max_tokens) = self.config.max_tokens {
+            builder = builder.max_tokens(max_tokens as u64);
+        }
+
+        let response = builder
+            .send()
+            .await
+            .map_err(|e| EbiError::LlmClientError(format!("Request failed: {}", e)))?;
+
+        // Extract the text content from the response
+        let mut extracted_text = String::new();
+        for content in response.choice.iter() {
+            if let AssistantContent::Text(text_content) = content {
+                extracted_text.push_str(&text_content.text);
+            }
+        }
+
+        Ok(extracted_text)
+    }
+
+    fn build_prompt(&self, request: &AnalysisRequest) -> String {
+        use crate::analyzer::prompts::PromptTemplate;
+
+        match request.analysis_type {
+            AnalysisType::CodeVulnerability => PromptTemplate::build_vulnerability_analysis_prompt(
+                &request.content,
+                &request.context.language,
+                &request.context.source,
+                &request.output_language,
+            ),
+            AnalysisType::InjectionDetection => PromptTemplate::build_injection_analysis_prompt(
+                &request.content,
+                &request.context.language,
+                &request.context.source,
+                &request.output_language,
+            ),
+            AnalysisType::DetailedRiskAnalysis => {
+                PromptTemplate::build_detailed_risk_analysis_prompt(
+                    &request.content,
+                    &request.context.language,
+                    &request.context.source,
+                    &request.output_language,
+                    &[],
+                )
+            }
+            AnalysisType::SpecificThreatAnalysis => {
+                PromptTemplate::build_specific_threat_analysis_prompt(
+                    &request.content,
+                    &request.context.language,
+                    &request.context.source,
+                    &request.output_language,
+                    &[],
+                )
+            }
+        }
+    }
+
+    fn build_system_prompt(&self, analysis_type: &AnalysisType, output_language: &OutputLanguage) -> String {
+        use crate::analyzer::prompts::PromptTemplate;
+        PromptTemplate::build_system_prompt(analysis_type, output_language)
+    }
+
+    fn parse_analysis_response(response: &str) -> (crate::models::RiskLevel, String, f32) {
+        let response_lower = response.to_lowercase();
+
+        let risk_level = determine_risk_level(response, &response_lower);
+        let mut summary = extract_summary_from_response(response);
+        if let Some(legitimacy_line) = extract_legitimacy_line(response) {
+            let summary_lower = summary.to_lowercase();
+            if summary.is_empty()
+                || (!summary_lower.contains("legitimacy assessment")
+                    && !summary.contains("正当性評価")
+                    && !summary.contains("正当"))
+            {
+                summary = if summary.is_empty() {
+                    legitimacy_line
+                } else {
+                    format!("{}\n{}", legitimacy_line, summary)
+                };
+            }
+        }
+        let confidence = calculate_confidence(response, &response_lower);
+
+        (risk_level, summary, confidence)
+    }
+}
+
+impl LlmProvider for RigLlmClient {
+    fn analyze<'a>(
+        &'a self,
+        request: &'a AnalysisRequest,
+    ) -> Pin<Box<dyn Future<Output = Result<AnalysisResult, EbiError>> + Send + 'a>> {
+        Box::pin(async move {
+            let start_time = std::time::Instant::now();
+
+            let response_content = self.make_api_request(request).await?;
+
+            let duration_ms = start_time.elapsed().as_millis() as u64;
+
+            let (risk_level, summary, confidence) =
+                Self::parse_analysis_response(&response_content);
+
+            let result = AnalysisResult::new(
+                request.analysis_type.clone(),
+                self.config.model_name.clone(),
+                duration_ms,
+            )
+            .with_risk_level(risk_level)
+            .with_summary(summary)
+            .with_confidence(confidence)
+            .with_details(response_content);
+
+            Ok(result)
+        })
+    }
+
+    fn get_model_name(&self) -> &str {
+        &self.config.model_name
+    }
+
+    fn get_timeout(&self) -> Duration {
+        Duration::from_secs(self.config.timeout_seconds)
+    }
+}
+
+fn create_provider(config: &LlmConfig) -> Result<RigProvider, EbiError> {
+    let model_name = config.model_name.trim();
+
+    if is_openai_model(model_name) {
+        let api_key = config.api_key.clone()
+            .or_else(|| std::env::var("OPENAI_API_KEY").ok())
+            .ok_or_else(|| EbiError::LlmClientError("OpenAI API key not found".to_string()))?;
+
+        let client = openai::Client::new(&api_key);
+
+        // Use ResponsesCompletionModel for newer models
+        if model_name.starts_with("gpt-5") || model_name.starts_with("o") {
+            Ok(RigProvider::OpenAIResponses(client))
         } else {
-            chat_request = Some(self.build_api_request(
-                prompt,
-                &request.analysis_type,
-                &request.output_language,
-            ));
-            responses_request = None;
+            Ok(RigProvider::OpenAI(client))
         }
+    } else if is_claude_model(model_name) {
+        let api_key = config.api_key.clone()
+            .or_else(|| std::env::var("ANTHROPIC_API_KEY").ok())
+            .ok_or_else(|| EbiError::LlmClientError("Anthropic API key not found".to_string()))?;
 
-        let mut retries = 0;
-        loop {
-            let timeout_secs = request.timeout_seconds.min(self.config.timeout_seconds);
-            let timeout_duration = Duration::from_secs(timeout_secs);
+        let client = anthropic::Client::new(&api_key);
+        Ok(RigProvider::Anthropic(client))
+    } else if is_gemini_model(model_name) {
+        let api_key = config.api_key.clone()
+            .or_else(|| std::env::var("GEMINI_API_KEY").ok())
+            .ok_or_else(|| EbiError::LlmClientError("Gemini API key not found".to_string()))?;
 
-            let mut http_request = self
-                .client
-                .post(&self.config.api_endpoint)
-                .header("Content-Type", "application/json");
-
-            if let Some(ref req) = chat_request {
-                http_request = http_request.json(req);
-            } else if let Some(ref req) = responses_request {
-                http_request = http_request.json(req);
-            }
-
-            if let Some(ref api_key) = self.config.api_key {
-                if !api_key.is_empty() {
-                    http_request =
-                        http_request.header("Authorization", format!("Bearer {}", api_key));
-                }
-            }
-
-            let response = timeout(timeout_duration, http_request.send()).await;
-
-            match response {
-                Ok(Ok(resp)) => {
-                    if resp.status().is_success() {
-                        if use_responses_api {
-                            let api_response: ResponsesApiResponse =
-                                resp.json().await.map_err(|e| {
-                                    EbiError::LlmClientError(format!(
-                                        "Failed to parse response: {}",
-                                        e
-                                    ))
-                                })?;
-
-                            if let Some(text) = api_response.output_text {
-                                if !text.trim().is_empty() {
-                                    return Ok(text);
-                                }
-                            }
-
-                            for output in api_response.output {
-                                for piece in output.content {
-                                    if piece.content_type == "output_text" {
-                                        if let Some(text) = piece.text {
-                                            return Ok(text);
-                                        }
-                                    }
-                                }
-                            }
-
-                            return Ok(String::new());
-                        } else {
-                            let api_response: LlmApiResponse = resp.json().await.map_err(|e| {
-                                EbiError::LlmClientError(format!("Failed to parse response: {}", e))
-                            })?;
-
-                            if let Some(choice) = api_response.choices.first() {
-                                return Ok(choice.message.content.clone());
-                            } else {
-                                return Err(EbiError::LlmClientError(
-                                    "No response choices received".to_string(),
-                                ));
-                            }
-                        }
-                    } else {
-                        let status = resp.status();
-                        let error_text = resp
-                            .text()
-                            .await
-                            .unwrap_or_else(|_| "Unknown error".to_string());
-
-                        if retries < self.config.max_retries
-                            && (status.is_server_error() || status == 429)
-                        {
-                            retries += 1;
-                            tokio::time::sleep(Duration::from_millis(1000 * retries as u64)).await;
-                            continue;
-                        }
-
-                        return Err(EbiError::LlmClientError(format!(
-                            "API request failed with status {}: {}",
-                            status, error_text
-                        )));
-                    }
-                }
-                Ok(Err(e)) => {
-                    if retries < self.config.max_retries {
-                        retries += 1;
-                        tokio::time::sleep(Duration::from_millis(1000 * retries as u64)).await;
-                        continue;
-                    }
-                    return Err(EbiError::LlmClientError(format!("Network error: {}", e)));
-                }
-                Err(_) => {
-                    return Err(EbiError::AnalysisTimeout {
-                        timeout: timeout_secs,
-                    });
-                }
-            }
-        }
-    }
-
-    fn build_prompt(&self, request: &AnalysisRequest) -> String {
-        use crate::analyzer::prompts::PromptTemplate;
-
-        match request.analysis_type {
-            AnalysisType::CodeVulnerability => PromptTemplate::build_vulnerability_analysis_prompt(
-                &request.content,
-                &request.context.language,
-                &request.context.source,
-                &request.output_language,
-            ),
-            AnalysisType::InjectionDetection => PromptTemplate::build_injection_analysis_prompt(
-                &request.content,
-                &request.context.language,
-                &request.context.source,
-                &request.output_language,
-            ),
-            AnalysisType::DetailedRiskAnalysis => {
-                // For now, pass empty initial findings - this could be enhanced later
-                PromptTemplate::build_detailed_risk_analysis_prompt(
-                    &request.content,
-                    &request.context.language,
-                    &request.context.source,
-                    &request.output_language,
-                    &[], // initial_findings - could be enhanced to pass actual findings
-                )
-            }
-            AnalysisType::SpecificThreatAnalysis => {
-                // For now, pass empty focus lines - this could be enhanced later
-                PromptTemplate::build_specific_threat_analysis_prompt(
-                    &request.content,
-                    &request.context.language,
-                    &request.context.source,
-                    &request.output_language,
-                    &[], // focus_lines - could be enhanced to pass specific line numbers
-                )
-            }
-        }
-    }
-
-    fn build_api_request(
-        &self,
-        prompt: String,
-        analysis_type: &AnalysisType,
-        output_language: &OutputLanguage,
-    ) -> LlmApiRequest {
-        build_llm_api_request(
-            &self.config.model_name,
-            prompt,
-            analysis_type,
-            output_language,
-        )
-    }
-
-    fn build_responses_request(
-        &self,
-        prompt: String,
-        _analysis_type: &AnalysisType,
-    ) -> ResponsesApiRequest {
-        ResponsesApiRequest {
-            model: self.config.model_name.clone(),
-            input: prompt,
-            reasoning: Some(ResponsesReasoning {
-                effort: "minimal".to_string(),
-            }),
-            text: Some(ResponsesText {
-                verbosity: "low".to_string(),
-            }),
-        }
+        let client = gemini::Client::new(&api_key);
+        Ok(RigProvider::Gemini(client))
+    } else {
+        Err(EbiError::LlmClientError(format!(
+            "Unsupported model '{}'. Use OpenAI (gpt-*), Anthropic (claude-*), or Gemini (gemini-*) models",
+            model_name
+        )))
     }
 }
 
-impl LlmProvider for OpenAiCompatibleClient {
-    fn analyze<'a>(
-        &'a self,
-        request: &'a AnalysisRequest,
-    ) -> Pin<Box<dyn Future<Output = Result<AnalysisResult, EbiError>> + Send + 'a>> {
-        Box::pin(async move {
-            let start_time = std::time::Instant::now();
-
-            let response_content = self.make_api_request(request).await?;
-
-            let duration_ms = start_time.elapsed().as_millis() as u64;
-
-            // Parse the response to extract risk level and summary
-            let (risk_level, summary, confidence) =
-                Self::parse_analysis_response(&response_content);
-
-            let result = AnalysisResult::new(
-                request.analysis_type.clone(),
-                self.config.model_name.clone(),
-                duration_ms,
-            )
-            .with_risk_level(risk_level)
-            .with_summary(summary)
-            .with_confidence(confidence)
-            .with_details(response_content);
-
-            Ok(result)
-        })
-    }
-
-    fn get_model_name(&self) -> &str {
-        &self.config.model_name
-    }
-
-    fn get_timeout(&self) -> Duration {
-        Duration::from_secs(self.config.timeout_seconds)
-    }
-}
-
-impl OpenAiCompatibleClient {
-    fn parse_analysis_response(response: &str) -> (crate::models::RiskLevel, String, f32) {
-        let response_lower = response.to_lowercase();
-
-        let risk_level = determine_risk_level(response, &response_lower);
-        let mut summary = extract_summary_from_response(response);
-        if let Some(legitimacy_line) = extract_legitimacy_line(response) {
-            let summary_lower = summary.to_lowercase();
-            if summary.is_empty()
-                || (!summary_lower.contains("legitimacy assessment")
-                    && !summary.contains("正当性評価")
-                    && !summary.contains("正当"))
-            {
-                summary = if summary.is_empty() {
-                    legitimacy_line
-                } else {
-                    format!("{}\n{}", legitimacy_line, summary)
-                };
-            }
-        }
-        let confidence = calculate_confidence(response, &response_lower);
-
-        (risk_level, summary, confidence)
-    }
-}
-
-// Anthropic Claude API structures
-#[derive(Debug, Serialize)]
-struct ClaudeApiRequest {
-    model: String,
-    max_tokens: u32,
-    messages: Vec<ClaudeMessage>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    temperature: Option<f32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    system: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
-struct ClaudeMessage {
-    role: String,
-    content: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct ClaudeApiResponse {
-    content: Vec<ClaudeContent>,
-    usage: Option<ClaudeUsage>,
-    #[serde(rename = "stop_reason")]
-    stop_reason: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct ClaudeContent {
-    text: String,
-    #[serde(rename = "type")]
-    content_type: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct ClaudeUsage {
-    #[serde(rename = "input_tokens")]
-    input_tokens: u32,
-    #[serde(rename = "output_tokens")]
-    output_tokens: u32,
-}
-
-pub struct ClaudeClient {
-    config: LlmConfig,
-    client: reqwest::Client,
-}
-
-impl ClaudeClient {
-    pub fn new(config: LlmConfig) -> Result<Self, EbiError> {
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(config.timeout_seconds))
-            .build()
-            .map_err(|e| {
-                EbiError::LlmClientError(format!("Failed to create HTTP client: {}", e))
-            })?;
-
-        Ok(Self { config, client })
-    }
-
-    async fn make_api_request(&self, request: &AnalysisRequest) -> Result<String, EbiError> {
-        let prompt = self.build_prompt(request);
-        let api_request =
-            self.build_api_request(prompt, &request.analysis_type, &request.output_language);
-
-        let mut retries = 0;
-        loop {
-            let timeout_secs = request.timeout_seconds.min(self.config.timeout_seconds);
-            let timeout_duration = Duration::from_secs(timeout_secs);
-
-            let http_request = self
-                .client
-                .post(&self.config.api_endpoint)
-                .header("Content-Type", "application/json")
-                .header(
-                    "x-api-key",
-                    self.config.api_key.as_ref().unwrap_or(&"".to_string()),
-                )
-                .header("anthropic-version", "2023-06-01")
-                .json(&api_request);
-
-            let response = timeout(timeout_duration, http_request.send()).await;
-
-            match response {
-                Ok(Ok(resp)) => {
-                    if resp.status().is_success() {
-                        let api_response: ClaudeApiResponse = resp.json().await.map_err(|e| {
-                            EbiError::LlmClientError(format!("Failed to parse response: {}", e))
-                        })?;
-
-                        if let Some(content) = api_response.content.first() {
-                            return Ok(content.text.clone());
-                        } else {
-                            return Err(EbiError::LlmClientError(
-                                "No response content received".to_string(),
-                            ));
-                        }
-                    } else {
-                        let status = resp.status();
-                        let error_text = resp
-                            .text()
-                            .await
-                            .unwrap_or_else(|_| "Unknown error".to_string());
-
-                        if retries < self.config.max_retries
-                            && (status.is_server_error() || status == 429)
-                        {
-                            retries += 1;
-                            tokio::time::sleep(Duration::from_millis(1000 * retries as u64)).await;
-                            continue;
-                        }
-
-                        return Err(EbiError::LlmClientError(format!(
-                            "API request failed with status {}: {}",
-                            status, error_text
-                        )));
-                    }
-                }
-                Ok(Err(e)) => {
-                    if retries < self.config.max_retries {
-                        retries += 1;
-                        tokio::time::sleep(Duration::from_millis(1000 * retries as u64)).await;
-                        continue;
-                    }
-                    return Err(EbiError::LlmClientError(format!("Network error: {}", e)));
-                }
-                Err(_) => {
-                    return Err(EbiError::AnalysisTimeout {
-                        timeout: timeout_secs,
-                    });
-                }
-            }
-        }
-    }
-
-    fn build_prompt(&self, request: &AnalysisRequest) -> String {
-        use crate::analyzer::prompts::PromptTemplate;
-
-        match request.analysis_type {
-            AnalysisType::CodeVulnerability => PromptTemplate::build_vulnerability_analysis_prompt(
-                &request.content,
-                &request.context.language,
-                &request.context.source,
-                &request.output_language,
-            ),
-            AnalysisType::InjectionDetection => PromptTemplate::build_injection_analysis_prompt(
-                &request.content,
-                &request.context.language,
-                &request.context.source,
-                &request.output_language,
-            ),
-            AnalysisType::DetailedRiskAnalysis => {
-                PromptTemplate::build_detailed_risk_analysis_prompt(
-                    &request.content,
-                    &request.context.language,
-                    &request.context.source,
-                    &request.output_language,
-                    &[], // No initial findings in base LLM call
-                )
-            }
-            AnalysisType::SpecificThreatAnalysis => {
-                PromptTemplate::build_specific_threat_analysis_prompt(
-                    &request.content,
-                    &request.context.language,
-                    &request.context.source,
-                    &request.output_language,
-                    &[], // No focus lines in base LLM call
-                )
-            }
-        }
-    }
-
-    fn build_api_request(
-        &self,
-        prompt: String,
-        analysis_type: &AnalysisType,
-        output_language: &OutputLanguage,
-    ) -> ClaudeApiRequest {
-        use crate::analyzer::prompts::PromptTemplate;
-        let system_prompt = PromptTemplate::build_system_prompt(analysis_type, output_language);
-
-        ClaudeApiRequest {
-            model: self.config.model_name.clone(),
-            max_tokens: self.config.max_tokens.unwrap_or(CLAUDE_DEFAULT_MAX_TOKENS),
-            messages: vec![ClaudeMessage {
-                role: "user".to_string(),
-                content: prompt,
-            }],
-            temperature: self.config.temperature.or(Some(CLAUDE_DEFAULT_TEMPERATURE)),
-            system: Some(system_prompt),
-        }
-    }
-}
-
-impl LlmProvider for ClaudeClient {
-    fn analyze<'a>(
-        &'a self,
-        request: &'a AnalysisRequest,
-    ) -> Pin<Box<dyn Future<Output = Result<AnalysisResult, EbiError>> + Send + 'a>> {
-        Box::pin(async move {
-            let start_time = std::time::Instant::now();
-
-            let response_content = self.make_api_request(request).await?;
-
-            let duration_ms = start_time.elapsed().as_millis() as u64;
-
-            // Parse the response to extract risk level and summary
-            let (risk_level, summary, confidence) =
-                Self::parse_analysis_response(&response_content);
-
-            let result = AnalysisResult::new(
-                request.analysis_type.clone(),
-                self.config.model_name.clone(),
-                duration_ms,
-            )
-            .with_risk_level(risk_level)
-            .with_summary(summary)
-            .with_confidence(confidence)
-            .with_details(response_content);
-
-            Ok(result)
-        })
-    }
-
-    fn get_model_name(&self) -> &str {
-        &self.config.model_name
-    }
-
-    fn get_timeout(&self) -> Duration {
-        Duration::from_secs(self.config.timeout_seconds)
-    }
-}
-
-impl ClaudeClient {
-    fn parse_analysis_response(response: &str) -> (crate::models::RiskLevel, String, f32) {
-        let response_lower = response.to_lowercase();
-
-        let risk_level = determine_risk_level(response, &response_lower);
-        let mut summary = extract_summary_from_response(response);
-        if let Some(legitimacy_line) = extract_legitimacy_line(response) {
-            let summary_lower = summary.to_lowercase();
-            if summary.is_empty()
-                || (!summary_lower.contains("legitimacy assessment")
-                    && !summary.contains("正当性評価")
-                    && !summary.contains("正当"))
-            {
-                summary = if summary.is_empty() {
-                    legitimacy_line
-                } else {
-                    format!("{}\n{}", legitimacy_line, summary)
-                };
-            }
-        }
-        let confidence = calculate_confidence(response, &response_lower);
-
-        (risk_level, summary, confidence)
-    }
-}
-
-// Gemini API structures
-#[derive(Debug, Serialize)]
-struct GeminiApiRequest {
-    contents: Vec<GeminiContent>,
-    generation_config: Option<GeminiGenerationConfig>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct GeminiContent {
-    parts: Vec<GeminiPart>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct GeminiPart {
-    text: String,
-}
-
-#[derive(Debug, Serialize)]
-struct GeminiGenerationConfig {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    max_output_tokens: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    temperature: Option<f32>,
-}
-
-#[derive(Debug, Deserialize)]
-struct GeminiApiResponse {
-    candidates: Vec<GeminiCandidate>,
-    usage_metadata: Option<GeminiUsageMetadata>,
-}
-
-#[derive(Debug, Deserialize)]
-struct GeminiCandidate {
-    content: GeminiContent,
-    finish_reason: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct GeminiUsageMetadata {
-    prompt_token_count: u32,
-    candidates_token_count: u32,
-    total_token_count: u32,
-}
-
-pub struct GeminiClient {
-    config: LlmConfig,
-    client: reqwest::Client,
-}
-
-impl GeminiClient {
-    pub fn new(config: LlmConfig) -> Result<Self, EbiError> {
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(config.timeout_seconds))
-            .build()
-            .map_err(|e| {
-                EbiError::LlmClientError(format!("Failed to create HTTP client: {}", e))
-            })?;
-
-        Ok(Self { config, client })
-    }
-
-    async fn make_api_request(&self, request: &AnalysisRequest) -> Result<String, EbiError> {
-        let prompt = self.build_prompt(request);
-        let api_request =
-            self.build_api_request(prompt, &request.analysis_type, &request.output_language);
-
-        let mut retries = 0;
-        loop {
-            let timeout_secs = request.timeout_seconds.min(self.config.timeout_seconds);
-            let timeout_duration = Duration::from_secs(timeout_secs);
-
-            let mut http_request = self
-                .client
-                .post(&self.config.api_endpoint)
-                .header("Content-Type", "application/json")
-                .json(&api_request);
-
-            if let Some(ref api_key) = self.config.api_key {
-                if !api_key.is_empty() {
-                    http_request = http_request.query(&[("key", api_key)]);
-                }
-            }
-
-            let response = timeout(timeout_duration, http_request.send()).await;
-
-            match response {
-                Ok(Ok(resp)) => {
-                    if resp.status().is_success() {
-                        let api_response: GeminiApiResponse = resp.json().await.map_err(|e| {
-                            EbiError::LlmClientError(format!("Failed to parse response: {}", e))
-                        })?;
-
-                        if let Some(candidate) = api_response.candidates.first() {
-                            if let Some(part) = candidate.content.parts.first() {
-                                return Ok(part.text.clone());
-                            }
-                        }
-                        return Err(EbiError::LlmClientError(
-                            "No response content received".to_string(),
-                        ));
-                    } else {
-                        let status = resp.status();
-                        let error_text = resp
-                            .text()
-                            .await
-                            .unwrap_or_else(|_| "Unknown error".to_string());
-
-                        if retries < self.config.max_retries
-                            && (status.is_server_error() || status == 429)
-                        {
-                            retries += 1;
-                            tokio::time::sleep(Duration::from_millis(1000 * retries as u64)).await;
-                            continue;
-                        }
-
-                        return Err(EbiError::LlmClientError(format!(
-                            "API request failed with status {}: {}",
-                            status, error_text
-                        )));
-                    }
-                }
-                Ok(Err(e)) => {
-                    if retries < self.config.max_retries {
-                        retries += 1;
-                        tokio::time::sleep(Duration::from_millis(1000 * retries as u64)).await;
-                        continue;
-                    }
-                    return Err(EbiError::LlmClientError(format!("Network error: {}", e)));
-                }
-                Err(_) => {
-                    return Err(EbiError::AnalysisTimeout {
-                        timeout: timeout_secs,
-                    });
-                }
-            }
-        }
-    }
-
-    fn build_prompt(&self, request: &AnalysisRequest) -> String {
-        use crate::analyzer::prompts::PromptTemplate;
-
-        match request.analysis_type {
-            AnalysisType::CodeVulnerability => PromptTemplate::build_vulnerability_analysis_prompt(
-                &request.content,
-                &request.context.language,
-                &request.context.source,
-                &request.output_language,
-            ),
-            AnalysisType::InjectionDetection => PromptTemplate::build_injection_analysis_prompt(
-                &request.content,
-                &request.context.language,
-                &request.context.source,
-                &request.output_language,
-            ),
-            AnalysisType::DetailedRiskAnalysis => {
-                PromptTemplate::build_detailed_risk_analysis_prompt(
-                    &request.content,
-                    &request.context.language,
-                    &request.context.source,
-                    &request.output_language,
-                    &[], // No initial findings in base LLM call
-                )
-            }
-            AnalysisType::SpecificThreatAnalysis => {
-                PromptTemplate::build_specific_threat_analysis_prompt(
-                    &request.content,
-                    &request.context.language,
-                    &request.context.source,
-                    &request.output_language,
-                    &[], // No focus lines in base LLM call
-                )
-            }
-        }
-    }
-
-    fn build_api_request(
-        &self,
-        prompt: String,
-        analysis_type: &AnalysisType,
-        output_language: &OutputLanguage,
-    ) -> GeminiApiRequest {
-        use crate::analyzer::prompts::PromptTemplate;
-        let system_prompt = PromptTemplate::build_system_prompt(analysis_type, output_language);
-        let full_prompt = format!("{}\n\n{}", system_prompt, prompt);
-
-        GeminiApiRequest {
-            contents: vec![GeminiContent {
-                parts: vec![GeminiPart { text: full_prompt }],
-            }],
-            generation_config: Some(GeminiGenerationConfig {
-                max_output_tokens: self.config.max_tokens,
-                temperature: self.config.temperature,
-            }),
-        }
-    }
-}
-
-impl LlmProvider for GeminiClient {
-    fn analyze<'a>(
-        &'a self,
-        request: &'a AnalysisRequest,
-    ) -> Pin<Box<dyn Future<Output = Result<AnalysisResult, EbiError>> + Send + 'a>> {
-        Box::pin(async move {
-            let start_time = std::time::Instant::now();
-
-            let response_content = self.make_api_request(request).await?;
-
-            let duration_ms = start_time.elapsed().as_millis() as u64;
-
-            // Parse the response to extract risk level and summary
-            let (risk_level, summary, confidence) =
-                Self::parse_analysis_response(&response_content);
-
-            let result = AnalysisResult::new(
-                request.analysis_type.clone(),
-                self.config.model_name.clone(),
-                duration_ms,
-            )
-            .with_risk_level(risk_level)
-            .with_summary(summary)
-            .with_confidence(confidence)
-            .with_details(response_content);
-
-            Ok(result)
-        })
-    }
-
-    fn get_model_name(&self) -> &str {
-        &self.config.model_name
-    }
-
-    fn get_timeout(&self) -> Duration {
-        Duration::from_secs(self.config.timeout_seconds)
-    }
-}
-
-impl GeminiClient {
-    fn parse_analysis_response(response: &str) -> (crate::models::RiskLevel, String, f32) {
-        let response_lower = response.to_lowercase();
-
-        let risk_level = determine_risk_level(response, &response_lower);
-        let mut summary = extract_summary_from_response(response);
-        if let Some(legitimacy_line) = extract_legitimacy_line(response) {
-            let summary_lower = summary.to_lowercase();
-            if summary.is_empty()
-                || (!summary_lower.contains("legitimacy assessment")
-                    && !summary.contains("正当性評価")
-                    && !summary.contains("正当"))
-            {
-                summary = if summary.is_empty() {
-                    legitimacy_line
-                } else {
-                    format!("{}\n{}", legitimacy_line, summary)
-                };
-            }
-        }
-        let confidence = calculate_confidence(response, &response_lower);
-
-        (risk_level, summary, confidence)
-    }
-}
-
-// Factory function to create LLM clients
 pub fn create_llm_client(
     model: &str,
     api_key: Option<String>,
     timeout_seconds: u64,
 ) -> Result<Box<dyn LlmProvider + Send + Sync>, EbiError> {
-    // Determine API endpoint based on model
-    let endpoint_override = std::env::var("EBI_LLM_API_ENDPOINT").ok();
-    let trimmed_model = model.trim();
-
-    let (api_endpoint, actual_model) = if let Some(endpoint) = endpoint_override {
-        (endpoint, trimmed_model.to_string())
-    } else if is_openai_model(trimmed_model) {
-        if is_responses_model(trimmed_model) {
-            (
-                "https://api.openai.com/v1/responses".to_string(),
-                trimmed_model.to_string(),
-            )
-        } else {
-            (
-                "https://api.openai.com/v1/chat/completions".to_string(),
-                trimmed_model.to_string(),
-            )
-        }
-    } else if is_claude_model(trimmed_model) {
-        (
-            "https://api.anthropic.com/v1/messages".to_string(),
-            trimmed_model.to_string(),
-        )
-    } else if is_gemini_model(trimmed_model) {
-        (
-            format!(
-                "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent",
-                trimmed_model
-            ),
-            trimmed_model.to_string(),
-        )
-    } else {
-        return Err(EbiError::LlmClientError(format!(
-            "Unsupported model '{trimmed_model}'. Specify a supported model or set EBI_LLM_API_ENDPOINT for custom integrations",
-        )));
-    };
-
     let config = LlmConfig {
-        model_name: actual_model,
-        api_endpoint,
+        model_name: model.to_string(),
         api_key,
         timeout_seconds,
         max_retries: 3,
-        max_tokens: None,
-        temperature: None,
+        max_tokens: Some(1000),
+        temperature: Some(0.3),
     };
 
-    let client: Box<dyn LlmProvider + Send + Sync> = if is_claude_model(&config.model_name) {
-        Box::new(ClaudeClient::new(config)?)
-    } else if is_gemini_model(&config.model_name) {
-        Box::new(GeminiClient::new(config)?)
-    } else {
-        Box::new(OpenAiCompatibleClient::new(config)?)
-    };
-    Ok(client)
-}
-
-fn build_llm_api_request(
-    model_name: &str,
-    prompt: String,
-    analysis_type: &AnalysisType,
-    output_language: &OutputLanguage,
-) -> LlmApiRequest {
-    use crate::analyzer::prompts::PromptTemplate;
-
-    let uses_reasoning = uses_reasoning_parameters(model_name);
-    let system_prompt = PromptTemplate::build_system_prompt(analysis_type, output_language);
-
-    let mut api_request = LlmApiRequest {
-        model: model_name.to_string(),
-        messages: vec![
-            ChatMessage {
-                role: "system".to_string(),
-                content: system_prompt,
-            },
-            ChatMessage {
-                role: "user".to_string(),
-                content: prompt,
-            },
-        ],
-        max_tokens: None,
-        max_completion_tokens: None,
-        temperature: if uses_reasoning { None } else { Some(0.3) },
-    };
-
-    if uses_reasoning {
-        api_request.max_completion_tokens = Some(1000);
-    } else {
-        api_request.max_tokens = Some(1000);
-    }
-
-    api_request
+    let client = RigLlmClient::new(config)?;
+    Ok(Box::new(client))
 }
 
 fn is_openai_model(model: &str) -> bool {
@@ -1441,19 +689,7 @@ fn is_claude_model(model: &str) -> bool {
 
 fn is_gemini_model(model: &str) -> bool {
     let candidate = model.strip_prefix("gemini/").unwrap_or(model);
-
     candidate.starts_with("gemini-")
-}
-
-fn uses_reasoning_parameters(model: &str) -> bool {
-    let candidate = model.strip_prefix("openai/").unwrap_or(model);
-    let candidate = candidate.strip_prefix("ft:").unwrap_or(candidate);
-
-    candidate.starts_with("o1")
-        || candidate.starts_with("o3")
-        || candidate.starts_with("o4")
-        || candidate.starts_with("gpt-5")
-        || candidate.starts_with("gpt-4.1")
 }
 
 #[cfg(test)]
@@ -1479,7 +715,7 @@ mod tests {
     fn test_response_parsing() {
         let response = "Risk Level: HIGH\nThis script contains potential vulnerabilities including command injection.";
         let (risk_level, summary, confidence) =
-            OpenAiCompatibleClient::parse_analysis_response(response);
+            RigLlmClient::parse_analysis_response(response);
 
         assert_eq!(risk_level, crate::models::RiskLevel::High);
         assert!(summary.contains("vulnerabilities"));
@@ -1502,79 +738,26 @@ mod tests {
     }
 
     #[test]
-    fn test_o_series_models_supported_by_detection() {
-        assert!(super::is_openai_model("o1-mini"));
-        assert!(super::is_openai_model("o3-preview"));
-        assert!(super::is_openai_model("o4-mini"));
-        assert!(super::is_openai_model("gpt-5-mini"));
+    fn test_model_detection() {
+        assert!(is_openai_model("gpt-4"));
+        assert!(is_openai_model("gpt-4o"));
+        assert!(is_openai_model("o1-mini"));
+        assert!(is_openai_model("o3-preview"));
 
-        assert!(super::uses_reasoning_parameters("o1-mini"));
-        assert!(super::uses_reasoning_parameters("o3-preview"));
-        assert!(super::uses_reasoning_parameters("o4-mini"));
-        assert!(super::uses_reasoning_parameters("gpt-5-mini"));
-        assert!(super::uses_reasoning_parameters("gpt-4.1"));
+        assert!(is_claude_model("claude-3.5-sonnet"));
+        assert!(is_claude_model("claude-3-opus"));
+        assert!(is_claude_model("anthropic/claude-3.5-sonnet"));
 
-        assert!(!super::uses_reasoning_parameters("gpt-4o"));
-        assert!(!super::uses_reasoning_parameters("gpt-4o-mini"));
-        assert!(!super::uses_reasoning_parameters("gpt-3.5-turbo"));
-    }
-
-    #[test]
-    fn test_build_api_request_switches_token_parameters() {
-        use crate::models::{AnalysisType, OutputLanguage};
-        let request = super::build_llm_api_request(
-            "gpt-5-mini",
-            "prompt".to_string(),
-            &AnalysisType::CodeVulnerability,
-            &OutputLanguage::English,
-        );
-        assert!(request.max_tokens.is_none());
-        assert_eq!(request.max_completion_tokens, Some(1000));
-        assert!(request.temperature.is_none());
-
-        let classic_request = super::build_llm_api_request(
-            "gpt-4o",
-            "prompt".to_string(),
-            &AnalysisType::CodeVulnerability,
-            &OutputLanguage::English,
-        );
-        assert_eq!(classic_request.max_tokens, Some(1000));
-        assert!(classic_request.max_completion_tokens.is_none());
-        assert_eq!(classic_request.temperature, Some(0.3));
-    }
-
-    #[test]
-    fn test_claude_model_detection() {
-        assert!(super::is_claude_model("claude-3.5-sonnet"));
-        assert!(super::is_claude_model("claude-3.5-haiku"));
-        assert!(super::is_claude_model("claude-3-opus"));
-        assert!(super::is_claude_model("claude-3-sonnet"));
-        assert!(super::is_claude_model("claude-3-haiku"));
-        assert!(super::is_claude_model("claude-2"));
-        assert!(super::is_claude_model("claude-instant"));
-        assert!(super::is_claude_model("anthropic/claude-3.5-sonnet"));
-
-        assert!(!super::is_claude_model("gpt-4"));
-        assert!(!super::is_claude_model("gemini-pro"));
-        assert!(!super::is_claude_model("unknown-model"));
-    }
-
-    #[cfg_attr(target_os = "macos", ignore)]
-    #[test]
-    fn test_claude_client_creation() {
-        let client =
-            super::create_llm_client("claude-3.5-sonnet", Some("test-key".to_string()), 60);
-        assert!(client.is_ok());
-
-        let client = client.unwrap();
-        assert_eq!(client.get_model_name(), "claude-3.5-sonnet");
+        assert!(is_gemini_model("gemini-pro"));
+        assert!(is_gemini_model("gemini-1.5-pro"));
+        assert!(is_gemini_model("gemini/gemini-2.5-flash"));
     }
 
     #[test]
     fn test_claude_response_parsing() {
         let response = "Risk Level: HIGH\nThis script contains potential vulnerabilities including command injection.";
         let (risk_level, summary, confidence) =
-            super::ClaudeClient::parse_analysis_response(response);
+            RigLlmClient::parse_analysis_response(response);
 
         assert_eq!(risk_level, crate::models::RiskLevel::High);
         assert!(summary.contains("vulnerabilities"));
@@ -1582,33 +765,9 @@ mod tests {
     }
 
     #[test]
-    fn test_gemini_model_detection() {
-        assert!(super::is_gemini_model("gemini-pro"));
-        assert!(super::is_gemini_model("gemini-1.5-pro"));
-        assert!(super::is_gemini_model("gemini-1.5-flash"));
-        assert!(super::is_gemini_model("gemini-2.0-flash-exp"));
-        assert!(super::is_gemini_model("gemini-2.5-flash"));
-        assert!(super::is_gemini_model("gemini/gemini-1.5-pro"));
-
-        assert!(!super::is_gemini_model("gpt-4"));
-        assert!(!super::is_gemini_model("claude-3.5-sonnet"));
-        assert!(!super::is_gemini_model("unknown-model"));
-    }
-
-    #[cfg_attr(target_os = "macos", ignore)]
-    #[test]
-    fn test_gemini_client_creation() {
-        let client = super::create_llm_client("gemini-2.5-flash", Some("test-key".to_string()), 60);
-        assert!(client.is_ok());
-
-        let client = client.unwrap();
-        assert_eq!(client.get_model_name(), "gemini-2.5-flash");
-    }
-
-    #[test]
     fn test_gemini_response_parsing() {
         let response = "Risk Level: HIGH\nThis script contains potential vulnerabilities including command injection.";
-        let (risk_level, summary, confidence) = GeminiClient::parse_analysis_response(response);
+        let (risk_level, summary, confidence) = RigLlmClient::parse_analysis_response(response);
 
         assert_eq!(risk_level, crate::models::RiskLevel::High);
         assert!(summary.contains("vulnerabilities"));

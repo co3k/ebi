@@ -1,6 +1,19 @@
-# Rust
-/target/
-Cargo.lock
+# Go
+*.exe
+*.dll
+*.so
+*.dylib
+/ebi
+/ebi-server
+/ebi-monitor
+/safepipe
+/bin/
+/dist/
+/vendor/
+/.gomodcache/
+/.gocache/
+*.test
+*.out
 
 # IDE
 .vscode/
@@ -20,10 +33,13 @@ Thumbs.db
 # Logs
 *.log
 
-# API Keys (security)
+# API Keys / secrets (security)
 *api_key*
 *secret*
 
 # Test artifacts
 /test-outputs/
 /coverage/
+
+# Local runtime state
+/.local/

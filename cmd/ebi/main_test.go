@@ -144,7 +144,7 @@ func TestPipeDangerBlocked(t *testing.T) {
 	bin := buildBinary(t)
 	cmd := exec.Command(bin, "--yes")
 	cmd.Env = append(os.Environ(), "EBI_TEST_SUBPROCESS=1", "HOME="+t.TempDir())
-	cmd.Stdin = strings.NewReader("#!/bin/sh\nrm -rf /\n")
+	cmd.Stdin = strings.NewReader("#!/bin/sh\neval 'echo should-not-run'\n")
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &out
@@ -156,6 +156,9 @@ func TestPipeDangerBlocked(t *testing.T) {
 	} else {
 		t.Fatal(err)
 	}
+	if outputHasLine(out.String(), "should-not-run") {
+		t.Fatalf("flagged script unexpectedly executed: %s", out.String())
+	}
 }
 
 func TestPipeForceFlagged(t *testing.T) {
@@ -165,7 +168,7 @@ func TestPipeForceFlagged(t *testing.T) {
 	bin := buildBinary(t)
 	cmd := exec.Command(bin, "--yes", "--force-flagged")
 	cmd.Env = append(os.Environ(), "EBI_TEST_SUBPROCESS=1", "HOME="+t.TempDir())
-	cmd.Stdin = strings.NewReader("#!/bin/sh\nrm -rf /\necho forced\nexit 0\n")
+	cmd.Stdin = strings.NewReader("#!/bin/sh\neval 'echo forced'\nexit 0\n")
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &out
@@ -173,7 +176,7 @@ func TestPipeForceFlagged(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected success, got %v: %s", err, out.String())
 	}
-	if !strings.Contains(out.String(), "forced") {
+	if !outputHasLine(out.String(), "forced") {
 		t.Fatalf("expected forced output, got %s", out.String())
 	}
 }
@@ -182,12 +185,42 @@ func buildBinary(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "ebi")
-	cmd := exec.Command("go", "build", "-o", bin, "./cmd/ebi")
-	cmd.Dir = "/home/co3k/Work/ebi"
+	cmd := exec.Command("go", "build", "-buildvcs=false", "-o", bin, "./cmd/ebi")
+	cmd.Dir = moduleRoot(t)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("build failed: %v\n%s", err, out)
 	}
 	return bin
+}
+
+func moduleRoot(t *testing.T) string {
+	t.Helper()
+	cmd := exec.Command("go", "env", "GOMOD")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("locate module root: %v\n%s", err, out)
+	}
+	goMod := strings.TrimSpace(string(out))
+	if goMod == "" || goMod == os.DevNull {
+		t.Fatalf("locate module root: go env GOMOD returned %q", goMod)
+	}
+	info, err := os.Stat(goMod)
+	if err != nil {
+		t.Fatalf("locate module root: stat %q: %v", goMod, err)
+	}
+	if info.IsDir() {
+		t.Fatalf("locate module root: GOMOD path %q is a directory", goMod)
+	}
+	return filepath.Dir(goMod)
+}
+
+func outputHasLine(output, want string) bool {
+	for _, line := range strings.Split(output, "\n") {
+		if strings.TrimSuffix(line, "\r") == want {
+			return true
+		}
+	}
+	return false
 }
 
 func captureOutput(t *testing.T, fn func()) string {

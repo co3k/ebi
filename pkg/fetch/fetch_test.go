@@ -10,7 +10,14 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 )
+
+type staticResolver []string
+
+func (r staticResolver) LookupHost(ctx context.Context, host string) ([]string, error) {
+	return append([]string(nil), r...), nil
+}
 
 func TestFetchStdin(t *testing.T) {
 	body := "hello world"
@@ -111,17 +118,64 @@ func TestNormalizeURL(t *testing.T) {
 }
 
 func TestStrictSSRFRejectsLoopback(t *testing.T) {
-	// httptest server binds to loopback, so strict mode should reject it.
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte("ok"))
-	}))
-	defer ts.Close()
-	_, err := FetchURL(context.Background(), ts.URL, ServerOptions())
+	// Test the checked dialer directly: strict mode must reject loopback IP.
+	dial := safeDialContext(true)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_, err := dial(ctx, "tcp", "127.0.0.1:80")
 	if err == nil {
 		t.Fatal("expected strict mode to reject loopback")
 	}
 	if !strings.Contains(err.Error(), "disallowed ip") {
 		t.Fatalf("expected disallowed ip error, got %v", err)
+	}
+}
+
+func TestStrictSSRFRejectsPrivateIP(t *testing.T) {
+	dial := safeDialContext(true)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_, err := dial(ctx, "tcp", "10.0.0.1:80")
+	if err == nil {
+		t.Fatal("expected strict mode to reject private ip")
+	}
+}
+
+func TestStrictSSRFRejectsMixedDNSAnswers(t *testing.T) {
+	called := false
+	dial := safeDialContextWith(
+		true,
+		staticResolver{"8.8.8.8", "127.0.0.1"},
+		func(ctx context.Context, network, address string) (net.Conn, error) {
+			called = true
+			return nil, fmt.Errorf("must not dial")
+		},
+	)
+	_, err := dial(context.Background(), "tcp", "example.test:443")
+	if err == nil || !strings.Contains(err.Error(), "disallowed ip") {
+		t.Fatalf("expected mixed DNS answer rejection, got %v", err)
+	}
+	if called {
+		t.Fatal("dialer must not run when any DNS answer is disallowed")
+	}
+}
+
+func TestStrictSSRFTriesOnlyValidatedAnswers(t *testing.T) {
+	var got []string
+	dial := safeDialContextWith(
+		true,
+		staticResolver{"8.8.8.8", "1.1.1.1"},
+		func(ctx context.Context, network, address string) (net.Conn, error) {
+			got = append(got, address)
+			return nil, fmt.Errorf("unreachable")
+		},
+	)
+	_, err := dial(context.Background(), "tcp", "example.test:443")
+	if err == nil {
+		t.Fatal("expected dial failure")
+	}
+	if len(got) != 2 || got[0] != "8.8.8.8:443" || got[1] != "1.1.1.1:443" {
+		t.Fatalf("unexpected validated dial targets: %v", got)
 	}
 }
 

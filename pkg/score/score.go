@@ -4,43 +4,9 @@ package score
 import (
 	"fmt"
 	"sort"
-	"strings"
-	"time"
 
 	"github.com/co3k/ebi/pkg/schema"
 )
-
-// ParamsVersion identifies the scoring parameter set used.
-const ParamsVersion = "v0.1.0"
-
-// Scoring parameters. These are versioned and intentionally conservative.
-const (
-	TrustDefault              = 1.0
-	PositiveMultiplierBase      = 1.0
-	FamilyDiversityBonusPerExtra = 0.2
-	FamilyDiversityBonusMax      = 2.0
-	NegativeMultiplier           = 3.0
-	TrustedPositiveThreshold     = 1.0
-	DeltaInheritanceCoefficient  = 0.5
-	DeltaMaxDepth                = 3
-)
-
-// Severity assigns a weight to each claim category. Unknown values are
-// normalized to misc.other before lookup.
-var Severity = map[string]float64{
-	"net.fetch":         0.5,
-	"exec.remote_pipe":  1.0,
-	"exec.eval":         1.0,
-	"obfuscation.base64":  0.8,
-	"obfuscation.misc":  0.8,
-	"fs.delete_broad":   0.7,
-	"priv.sudo":         0.6,
-	"priv.persist":      0.9,
-	"env.exfil":         0.8,
-	"pkg.install":       0.5,
-	"download.unpinned": 0.3,
-	"misc.other":        0.4,
-}
 
 // VerifiedRecord is a record that has already passed signature/schema checks.
 type VerifiedRecord struct {
@@ -51,20 +17,43 @@ type VerifiedRecord struct {
 	Signature string
 }
 
+// Input is the deterministic scoring input.
+type Input struct {
+	// TargetHash is the SHA-256 hex of the script being scored.
+	TargetHash string
+
+	// Records are verified audit records for TargetHash.
+	Records []VerifiedRecord
+
+	// Retractions are verified retract/v1 records. A retraction removes a
+	// target record only when it is signed by the same auditor.
+	Retractions []VerifiedRecord
+
+	// Trust maps auditor ID to a trust coefficient. Missing or empty keys
+	// default to a near-zero value.
+	Trust map[string]float64
+
+	// PriorRecords are verified audit records for other target hashes. They
+	// are used for delta inheritance when a record references a previous
+	// target hash via prev_sha256.
+	PriorRecords []VerifiedRecord
+}
+
 // Report is the deterministic score output.
 type Report struct {
-	ParamsVersion    string
-	Verdict          string
-	Positive         float64
-	Negative         float64
-	Total            float64
-	RecordsUsed      int
-	SignalsUsed      int
-	KeysUsed         int
-	FamiliesUsed     int
-	RecordIDs        []string
-	Reason           string
-	DeltaInheritance bool
+	ParamsVersion       string
+	Verdict             string
+	Positive            float64
+	Negative            float64
+	Total               float64
+	RecordsUsed         int
+	SignalsUsed         int
+	KeysUsed            int
+	FamiliesUsed        int
+	RecordIDs           []string
+	Reason              string
+	DeltaInheritance    bool
+	RetractionsExcluded int
 }
 
 // Verdict values.
@@ -77,11 +66,18 @@ const (
 
 // family returns the scoring family for a record.
 func family(r VerifiedRecord) string {
-	if r.Body.ModelFamily != "" {
-		return r.Body.ModelFamily
+	if r.Body.Analyzer.Kind == schema.KindLLM && r.Body.Analyzer.ModelFamily != "" {
+		return r.Body.Analyzer.ModelFamily
 	}
-	if r.Body.AnalyzerFamily != "" {
-		return r.Body.AnalyzerFamily
+	if r.Body.Analyzer.Kind == schema.KindStatic {
+		return schema.FamilyStatic
+	}
+	if r.Body.Analyzer.Kind == schema.KindHuman {
+		return schema.FamilyHuman
+	}
+	// Fallback to analyzer kind for any other analyzer.
+	if r.Body.Analyzer.Kind != "" {
+		return r.Body.Analyzer.Kind
 	}
 	return schema.FamilyStatic
 }
@@ -91,21 +87,24 @@ func dedupeKey(r VerifiedRecord) string {
 	return r.AuditorID + "|" + family(r)
 }
 
-// Score computes a deterministic score from the given records.
-// retractionMap and recordsByID are used for delta inheritance and retraction
-// exclusion. Records already known to be retractions should be excluded before
-// calling Score.
-func Score(records []VerifiedRecord, recordsByID map[string]VerifiedRecord) Report {
-	if recordsByID == nil {
-		recordsByID = map[string]VerifiedRecord{}
+// Compute scores a single target hash deterministically.
+func Compute(input Input) Report {
+	records := filterByTarget(input.Records, input.TargetHash)
+	beforeRetractions := len(records)
+	records = applyRetractions(records, input.Retractions)
+	retractionsExcluded := beforeRetractions - len(records)
+
+	// Build lookup by target hash for delta inheritance.
+	byTarget := make(map[string][]VerifiedRecord)
+	for _, r := range input.PriorRecords {
+		byTarget[r.Body.Target.SHA256] = append(byTarget[r.Body.Target.SHA256], r)
 	}
+	// Include current records in the lookup for deeper chains.
 	for _, r := range records {
-		if _, ok := recordsByID[r.ID]; !ok {
-			recordsByID[r.ID] = r
-		}
+		byTarget[r.Body.Target.SHA256] = append(byTarget[r.Body.Target.SHA256], r)
 	}
 
-	// Deduplicate by (auditor, family): earliest created_at, tie by ID.
+	// Deduplicate by (auditor, family): earliest created_at, tie by record ID.
 	groups := map[string][]VerifiedRecord{}
 	for _, r := range records {
 		key := dedupeKey(r)
@@ -114,88 +113,89 @@ func Score(records []VerifiedRecord, recordsByID map[string]VerifiedRecord) Repo
 	selected := make([]VerifiedRecord, 0, len(groups))
 	for _, grp := range groups {
 		best := grp[0]
-		bestTime, _ := time.Parse(time.RFC3339, best.Body.CreatedAt)
+		bestTime := best.Body.CreatedAt
 		for _, r := range grp[1:] {
-			t, _ := time.Parse(time.RFC3339, r.Body.CreatedAt)
-			if t.Before(bestTime) || (t.Equal(bestTime) && r.ID < best.ID) {
+			if r.Body.CreatedAt < bestTime || (r.Body.CreatedAt == bestTime && r.ID < best.ID) {
 				best = r
-				bestTime = t
+				bestTime = r.Body.CreatedAt
 			}
 		}
 		selected = append(selected, best)
 	}
-	// Deterministic order by ID.
 	sort.Slice(selected, func(i, j int) bool { return selected[i].ID < selected[j].ID })
 
 	families := map[string]struct{}{}
+	keys := map[string]struct{}{}
 	for _, r := range selected {
 		families[family(r)] = struct{}{}
+		keys[r.AuditorID] = struct{}{}
 	}
 	familyCount := len(families)
-	familyBonus := PositiveMultiplierBase
-	if familyCount > 1 {
-		extra := float64(familyCount-1) * FamilyDiversityBonusPerExtra
-		if extra > FamilyDiversityBonusMax-PositiveMultiplierBase {
-			extra = FamilyDiversityBonusMax - PositiveMultiplierBase
-		}
-		familyBonus += extra
-	}
+	familyBonus := familyDiversityBonus(familyCount)
 
-	positive := 0.0
-	negative := 0.0
-	hasOK := false
-	hasFlagged := false
 	recordIDs := []string{}
+	positiveRaw := 0.0
+	negative := 0.0
+	inheritedPositive := 0.0
+	inheritedNegative := 0.0
+	deltaInheritance := false
+	inheritedTargets := map[string]struct{}{}
 
 	for _, r := range selected {
 		recordIDs = append(recordIDs, r.ID)
-		base := baseScore(r, familyBonus)
-		if base > 0 {
-			hasOK = true
+		tr := trustFor(input.Trust, r.AuditorID)
+		switch r.Body.Verdict {
+		case schema.VerdictOK:
+			positiveRaw += tr
+		case schema.VerdictDanger:
+			if len(r.Body.Claims) > 0 {
+				sev := maxSeverity(r.Body.Claims)
+				negative += tr * sev * NegativeMultiplier
+			}
 		}
-		if r.Body.Verdict == schema.VerdictFlagged {
-			hasFlagged = true
-		}
-		if base > 0 {
-			positive += base
-		} else {
-			negative += -base
-		}
-		// Delta inheritance.
+		// Delta inheritance follows target hashes, coefficient .5, max 3 levels.
 		if r.Body.PrevSHA256 != "" {
-			prev, ok := recordsByID[r.Body.PrevSHA256]
-			if ok {
-				delta := deltaScore(prev, familyBonus, recordsByID, 1)
-				if delta > 0 {
-					positive += delta
-				} else {
-					negative += -delta
-				}
+			if _, alreadyInherited := inheritedTargets[r.Body.PrevSHA256]; alreadyInherited {
+				continue
+			}
+			if prev, ok := byTarget[r.Body.PrevSHA256]; ok && len(prev) > 0 {
+				inheritedTargets[r.Body.PrevSHA256] = struct{}{}
+				deltaInheritance = true
+				delta := computeDelta(Input{
+					TargetHash:   r.Body.PrevSHA256,
+					Records:      prev,
+					Retractions:  nil,
+					Trust:        input.Trust,
+					PriorRecords: nil,
+				}, byTarget, 1, map[string]bool{input.TargetHash: true})
+				inheritedPositive += delta.Positive * DeltaInheritanceCoefficient
+				inheritedNegative += delta.Negative * DeltaInheritanceCoefficient
 			}
 		}
 	}
 
-	if hasOK && positive == 0 {
-		positive = TrustDefault * familyBonus
-	}
+	positive := positiveRaw*familyBonus + inheritedPositive
+	negative += inheritedNegative
 
 	report := Report{
-		ParamsVersion: ParamsVersion,
-		Positive:      positive,
-		Negative:      negative,
-		Total:         positive - negative,
-		RecordsUsed:   len(records),
-		SignalsUsed:   len(selected),
-		KeysUsed:      len(groups),
-		FamiliesUsed:  familyCount,
-		RecordIDs:     recordIDs,
+		ParamsVersion:       ParamsVersion,
+		Positive:            positive,
+		Negative:            negative,
+		Total:               positive - negative,
+		RecordsUsed:         len(records),
+		SignalsUsed:         len(selected),
+		KeysUsed:            len(keys),
+		FamiliesUsed:        familyCount,
+		RecordIDs:           recordIDs,
+		DeltaInheritance:    deltaInheritance,
+		RetractionsExcluded: retractionsExcluded,
 	}
 
-	report.Reason = fmt.Sprintf("score=%.3f families=%d keys=%d signals=%d", report.Total, familyCount, len(groups), len(selected))
+	report.Reason = fmt.Sprintf("score=%.3f families=%d keys=%d signals=%d", report.Total, familyCount, len(keys), len(selected))
 
 	// Verdict priority.
 	switch {
-	case hasFlagged || negative >= TrustedPositiveThreshold:
+	case negative >= TrustedPositiveThreshold:
 		report.Verdict = VerdictFlagged
 	case positive >= TrustedPositiveThreshold && negative == 0:
 		report.Verdict = VerdictTrusted
@@ -207,46 +207,167 @@ func Score(records []VerifiedRecord, recordsByID map[string]VerifiedRecord) Repo
 	return report
 }
 
-// baseScore computes the contribution of a single record without delta inheritance.
-func baseScore(r VerifiedRecord, familyBonus float64) float64 {
-	trust := TrustDefault
-	switch r.Body.Verdict {
-	case schema.VerdictInfo:
-		return 0
-	case schema.VerdictOK:
-		return trust * familyBonus
-	case schema.VerdictCaution:
-		return 0
-	case schema.VerdictDanger, schema.VerdictFlagged:
-		sev := 0.0
-		for _, c := range r.Body.Claims {
-			cat := schema.DisplayCategory(c.Category)
-			sev += Severity[cat]
-		}
-		return -(trust * sev * NegativeMultiplier)
+// computeDelta recursively computes inherited score at a given depth.
+// The depth parameter is the current level (1 means first predecessor).
+func computeDelta(input Input, byTarget map[string][]VerifiedRecord, depth int, visiting map[string]bool) Report {
+	if visiting[input.TargetHash] {
+		return Report{ParamsVersion: ParamsVersion, Verdict: VerdictUnknown}
 	}
-	return 0
+	nextVisiting := make(map[string]bool, len(visiting)+1)
+	for hash, active := range visiting {
+		nextVisiting[hash] = active
+	}
+	nextVisiting[input.TargetHash] = true
+
+	// Filter to the target hash.
+	records := filterByTarget(input.Records, input.TargetHash)
+	// Deduplicate.
+	groups := map[string][]VerifiedRecord{}
+	for _, r := range records {
+		key := dedupeKey(r)
+		groups[key] = append(groups[key], r)
+	}
+	selected := make([]VerifiedRecord, 0, len(groups))
+	for _, grp := range groups {
+		best := grp[0]
+		bestTime := best.Body.CreatedAt
+		for _, r := range grp[1:] {
+			if r.Body.CreatedAt < bestTime || (r.Body.CreatedAt == bestTime && r.ID < best.ID) {
+				best = r
+				bestTime = r.Body.CreatedAt
+			}
+		}
+		selected = append(selected, best)
+	}
+
+	positiveRaw := 0.0
+	negative := 0.0
+	inheritedPositive := 0.0
+	inheritedNegative := 0.0
+	families := map[string]struct{}{}
+	inheritedTargets := map[string]struct{}{}
+
+	for _, r := range selected {
+		families[family(r)] = struct{}{}
+		tr := trustFor(input.Trust, r.AuditorID)
+		switch r.Body.Verdict {
+		case schema.VerdictOK:
+			positiveRaw += tr
+		case schema.VerdictDanger:
+			if len(r.Body.Claims) > 0 {
+				sev := maxSeverity(r.Body.Claims)
+				negative += tr * sev * NegativeMultiplier
+			}
+		}
+		// Chain deeper.
+		if depth < DeltaMaxDepth && r.Body.PrevSHA256 != "" {
+			if _, alreadyInherited := inheritedTargets[r.Body.PrevSHA256]; alreadyInherited {
+				continue
+			}
+			if prev, ok := byTarget[r.Body.PrevSHA256]; ok && len(prev) > 0 {
+				inheritedTargets[r.Body.PrevSHA256] = struct{}{}
+				delta := computeDelta(Input{
+					TargetHash:   r.Body.PrevSHA256,
+					Records:      prev,
+					Retractions:  nil,
+					Trust:        input.Trust,
+					PriorRecords: nil,
+				}, byTarget, depth+1, nextVisiting)
+				inheritedPositive += delta.Positive * DeltaInheritanceCoefficient
+				inheritedNegative += delta.Negative * DeltaInheritanceCoefficient
+			}
+		}
+	}
+
+	positive := positiveRaw*familyDiversityBonus(len(families)) + inheritedPositive
+	negative += inheritedNegative
+	verdict := VerdictUnknown
+	if negative >= TrustedPositiveThreshold {
+		verdict = VerdictFlagged
+	} else if positive >= TrustedPositiveThreshold && negative == 0 {
+		verdict = VerdictTrusted
+	} else if len(selected) > 0 {
+		verdict = VerdictCaution
+	}
+	return Report{
+		ParamsVersion: ParamsVersion,
+		Verdict:       verdict,
+		Positive:      positive,
+		Negative:      negative,
+		Total:         positive - negative,
+	}
 }
 
-// deltaScore recursively applies delta inheritance at coefficient .5, max depth 3.
-func deltaScore(r VerifiedRecord, familyBonus float64, recordsByID map[string]VerifiedRecord, depth int) float64 {
-	if depth > DeltaMaxDepth {
-		return 0
+func familyDiversityBonus(familyCount int) float64 {
+	bonus := PositiveMultiplierBase
+	if familyCount <= 1 {
+		return bonus
 	}
-	base := baseScore(r, familyBonus)
-	score := base * DeltaInheritanceCoefficient
-	if r.Body.PrevSHA256 != "" {
-		prev, ok := recordsByID[r.Body.PrevSHA256]
-		if ok {
-			score += deltaScore(prev, familyBonus, recordsByID, depth+1) * DeltaInheritanceCoefficient
-		}
+	extra := float64(familyCount-1) * FamilyDiversityBonusPerExtra
+	if extra > FamilyDiversityBonusMax-PositiveMultiplierBase {
+		extra = FamilyDiversityBonusMax - PositiveMultiplierBase
 	}
-	return score
+	return bonus + extra
 }
 
-// TrustFor returns the trust coefficient for an auditor. Default is 1.0.
-func TrustFor(auditorID string) float64 {
-	if strings.TrimSpace(auditorID) == "" {
+func filterByTarget(records []VerifiedRecord, targetHash string) []VerifiedRecord {
+	out := make([]VerifiedRecord, 0, len(records))
+	for _, r := range records {
+		if r.Body.Target.SHA256 == targetHash {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+func applyRetractions(records, retractions []VerifiedRecord) []VerifiedRecord {
+	out := make([]VerifiedRecord, 0, len(records))
+	for _, r := range records {
+		retracted := false
+		for _, retr := range retractions {
+			if retr.Body.Type != schema.SchemaRetractV1 {
+				continue
+			}
+			if retr.AuditorID != r.AuditorID {
+				continue
+			}
+			if retr.Body.RecordID == r.ID {
+				retracted = true
+				break
+			}
+		}
+		if !retracted {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+func maxSeverity(claims []schema.Claim) float64 {
+	max := 0.0
+	for _, c := range claims {
+		cat := schema.DisplayCategory(c.Category)
+		sev := Severity[cat]
+		if sev > max {
+			max = sev
+		}
+	}
+	if max == 0 {
+		return 1.0
+	}
+	return max
+}
+
+func trustFor(trust map[string]float64, auditorID string) float64 {
+	if trust != nil {
+		if v, ok := trust[auditorID]; ok {
+			if v < 0 {
+				return 0
+			}
+			return v
+		}
+	}
+	if auditorID == "" {
 		return 0
 	}
 	return TrustDefault
@@ -262,6 +383,68 @@ func NewRecordsByID(records []VerifiedRecord) map[string]VerifiedRecord {
 	m := make(map[string]VerifiedRecord, len(records))
 	for _, r := range records {
 		m[r.ID] = r
+	}
+	return m
+}
+
+// FilterRetractions removes retraction and moderation records from the list.
+func FilterRetractions(records []VerifiedRecord) []VerifiedRecord {
+	out := make([]VerifiedRecord, 0, len(records))
+	for _, r := range records {
+		if r.Body.Type == schema.SchemaRetractV1 || r.Body.Type == schema.SchemaModerationV1 {
+			continue
+		}
+		out = append(out, r)
+	}
+	return out
+}
+
+// Score is a compatibility wrapper around Compute.
+func Score(records []VerifiedRecord, recordsByID map[string]VerifiedRecord) Report {
+	trust := map[string]float64{}
+	retractions := []VerifiedRecord{}
+	var targetHash string
+	for _, r := range records {
+		if r.Body.Type == schema.SchemaRetractV1 {
+			retractions = append(retractions, r)
+			continue
+		}
+		if targetHash == "" {
+			targetHash = r.Body.Target.SHA256
+		}
+		if r.Body.Target.SHA256 == targetHash {
+			trust[r.AuditorID] = TrustFor(r.AuditorID, nil)
+		}
+	}
+	return Compute(Input{
+		TargetHash:   targetHash,
+		Records:      records,
+		Retractions:  retractions,
+		Trust:        trust,
+		PriorRecords: nil,
+	})
+}
+
+// TrustFor returns the trust coefficient for an auditor.
+// If history is nil, it returns the default trust value. Callers may supply a
+// history map to override trust for specific auditors.
+func TrustFor(auditorID string, history map[string]float64) float64 {
+	if history != nil {
+		if v, ok := history[auditorID]; ok {
+			return v
+		}
+	}
+	if auditorID == "" {
+		return 0
+	}
+	return TrustDefault
+}
+
+// NewRecordsByTarget builds a lookup map keyed by auditor|target hash.
+func NewRecordsByTarget(records []VerifiedRecord) map[string]VerifiedRecord {
+	m := make(map[string]VerifiedRecord, len(records))
+	for _, r := range records {
+		m[r.AuditorID+"|"+r.Body.Target.SHA256] = r
 	}
 	return m
 }

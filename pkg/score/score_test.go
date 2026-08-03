@@ -1,27 +1,29 @@
 package score
 
 import (
+	"crypto/ed25519"
+	"crypto/sha256"
+	"encoding/hex"
 	"testing"
 
 	"github.com/co3k/ebi/pkg/schema"
 )
 
-func mk(body schema.RecordBody) VerifiedRecord {
-	id := "id-" + body.Hash
-	return VerifiedRecord{ID: id, AuditorID: "aud-" + body.Analyzer, Body: body}
+func hash64(s string) string {
+	out := s
+	for len(out) < 64 {
+		out += "0"
+	}
+	return out[:64]
 }
 
-func hash(s string) string {
-	if len(s) < 64 {
-		for len(s) < 64 {
-			s += "0"
-		}
-	}
-	return s[:64]
+func mk(body schema.RecordBody) VerifiedRecord {
+	id := "id-" + body.Target.SHA256
+	return VerifiedRecord{ID: id, AuditorID: "aud-" + body.Analyzer.Kind, Body: body}
 }
 
 func TestScoreUnknown(t *testing.T) {
-	r := Score(nil, nil)
+	r := Compute(Input{TargetHash: hash64("x")})
 	if r.Verdict != VerdictUnknown {
 		t.Fatalf("expected unknown, got %s", r.Verdict)
 	}
@@ -29,17 +31,19 @@ func TestScoreUnknown(t *testing.T) {
 
 func TestScoreTrusted(t *testing.T) {
 	body := schema.RecordBody{
-		Schema:    schema.SchemaAuditV1,
-		Version:   schema.SchemaVersion,
-		CreatedAt: "2024-01-01T00:00:00Z",
-		Target:    "https://example.com/x",
-		Hash:      hash("a"),
-		Size:      1,
-		Analyzer:  "static-1",
-		AnalyzerFamily: "static",
+		Type:      schema.SchemaAuditV1,
+		CreatedAt: 1704067200,
+		Auditor:   hash64("a"),
+		Target:    schema.Target{URL: "https://example.com/x", SHA256: hash64("a"), Size: 1},
+		Analyzer:  schema.Analyzer{Kind: schema.KindStatic},
 		Verdict:   schema.VerdictOK,
 	}
-	r := Score([]VerifiedRecord{mk(body)}, nil)
+	tr := mk(body)
+	r := Compute(Input{
+		TargetHash: tr.Body.Target.SHA256,
+		Records:    []VerifiedRecord{tr},
+		Trust:      map[string]float64{tr.AuditorID: 1.0},
+	})
 	if r.Verdict != VerdictTrusted {
 		t.Fatalf("expected trusted, got %s (total %.3f)", r.Verdict, r.Total)
 	}
@@ -53,21 +57,22 @@ func TestScoreTrusted(t *testing.T) {
 
 func TestScoreFlagged(t *testing.T) {
 	body := schema.RecordBody{
-		Schema:    schema.SchemaAuditV1,
-		Version:   schema.SchemaVersion,
-		CreatedAt: "2024-01-01T00:00:00Z",
-		Target:    "https://example.com/x",
-		Hash:      hash("b"),
-		Size:      1,
-		Analyzer:  "llm-1",
-		ModelFamily: "gpt",
-		Model:     "gpt-mini",
-		Verdict:   schema.VerdictFlagged,
+		Type:      schema.SchemaAuditV1,
+		CreatedAt: 1704067200,
+		Auditor:   hash64("a"),
+		Target:    schema.Target{URL: "https://example.com/x", SHA256: hash64("b"), Size: 1},
+		Analyzer:  schema.Analyzer{Kind: schema.KindLLM, ModelFamily: "gpt", Model: "gpt-mini"},
+		Verdict:   schema.VerdictDanger,
 		Claims: []schema.Claim{
-			{Category: "exec.eval", Line: 1, LineHash: hash("c")},
+			{Category: "exec.eval", Line: 1, LineSHA256: hash64("c")},
 		},
 	}
-	r := Score([]VerifiedRecord{mk(body)}, nil)
+	tr := mk(body)
+	r := Compute(Input{
+		TargetHash: tr.Body.Target.SHA256,
+		Records:    []VerifiedRecord{tr},
+		Trust:      map[string]float64{tr.AuditorID: 1.0},
+	})
 	if r.Verdict != VerdictFlagged {
 		t.Fatalf("expected flagged, got %s", r.Verdict)
 	}
@@ -75,20 +80,22 @@ func TestScoreFlagged(t *testing.T) {
 
 func TestScoreDangerNegative(t *testing.T) {
 	body := schema.RecordBody{
-		Schema:    schema.SchemaAuditV1,
-		Version:   schema.SchemaVersion,
-		CreatedAt: "2024-01-01T00:00:00Z",
-		Target:    "https://example.com/x",
-		Hash:      hash("d"),
-		Size:      1,
-		Analyzer:  "static-1",
-		AnalyzerFamily: "static",
+		Type:      schema.SchemaAuditV1,
+		CreatedAt: 1704067200,
+		Auditor:   hash64("a"),
+		Target:    schema.Target{URL: "https://example.com/x", SHA256: hash64("d"), Size: 1},
+		Analyzer:  schema.Analyzer{Kind: schema.KindStatic},
 		Verdict:   schema.VerdictDanger,
 		Claims: []schema.Claim{
-			{Category: "priv.sudo", Line: 1, LineHash: hash("e")},
+			{Category: "priv.sudo", Line: 1, LineSHA256: hash64("e")},
 		},
 	}
-	r := Score([]VerifiedRecord{mk(body)}, nil)
+	tr := mk(body)
+	r := Compute(Input{
+		TargetHash: tr.Body.Target.SHA256,
+		Records:    []VerifiedRecord{tr},
+		Trust:      map[string]float64{tr.AuditorID: 1.0},
+	})
 	if r.Total >= 0 {
 		t.Fatalf("expected negative total, got %.3f", r.Total)
 	}
@@ -99,30 +106,28 @@ func TestScoreDangerNegative(t *testing.T) {
 
 func TestScoreDeduplication(t *testing.T) {
 	b1 := schema.RecordBody{
-		Schema:    schema.SchemaAuditV1,
-		Version:   schema.SchemaVersion,
-		CreatedAt: "2024-01-01T00:00:00Z",
-		Target:    "https://example.com/x",
-		Hash:      hash("f1"),
-		Size:      1,
-		Analyzer:  "a1",
-		AnalyzerFamily: "static",
+		Type:      schema.SchemaAuditV1,
+		CreatedAt: 1704067200,
+		Auditor:   hash64("a"),
+		Target:    schema.Target{URL: "https://example.com/x", SHA256: hash64("f"), Size: 1},
+		Analyzer:  schema.Analyzer{Kind: schema.KindStatic},
 		Verdict:   schema.VerdictOK,
 	}
 	b2 := schema.RecordBody{
-		Schema:    schema.SchemaAuditV1,
-		Version:   schema.SchemaVersion,
-		CreatedAt: "2024-01-01T00:00:01Z",
-		Target:    "https://example.com/x",
-		Hash:      hash("f2"),
-		Size:      1,
-		Analyzer:  "a1",
-		AnalyzerFamily: "static",
+		Type:      schema.SchemaAuditV1,
+		CreatedAt: 1704067201,
+		Auditor:   hash64("a"),
+		Target:    schema.Target{URL: "https://example.com/x", SHA256: hash64("f"), Size: 1},
+		Analyzer:  schema.Analyzer{Kind: schema.KindStatic},
 		Verdict:   schema.VerdictDanger,
-		Claims:    []schema.Claim{{Category: "exec.eval", Line: 1, LineHash: hash("f3")}},
+		Claims:    []schema.Claim{{Category: "exec.eval", Line: 1, LineSHA256: hash64("ab")}},
 	}
 	recs := []VerifiedRecord{mk(b1), mk(b2)}
-	r := Score(recs, NewRecordsByID(recs))
+	r := Compute(Input{
+		TargetHash: hash64("f"),
+		Records:    recs,
+		Trust:      map[string]float64{recs[0].AuditorID: 1.0},
+	})
 	if r.SignalsUsed != 1 {
 		t.Fatalf("expected 1 signal after dedup, got %d", r.SignalsUsed)
 	}
@@ -134,93 +139,383 @@ func TestScoreDeduplication(t *testing.T) {
 
 func TestScoreDelta(t *testing.T) {
 	b1 := schema.RecordBody{
-		Schema:    schema.SchemaAuditV1,
-		Version:   schema.SchemaVersion,
-		CreatedAt: "2024-01-01T00:00:00Z",
-		Target:    "https://example.com/x",
-		Hash:      hash("g1"),
-		Size:      1,
-		Analyzer:  "a1",
-		AnalyzerFamily: "static",
+		Type:      schema.SchemaAuditV1,
+		CreatedAt: 1704067200,
+		Auditor:   hash64("a"),
+		Target:    schema.Target{URL: "https://example.com/x", SHA256: hash64("ac"), Size: 1},
+		Analyzer:  schema.Analyzer{Kind: schema.KindStatic},
 		Verdict:   schema.VerdictDanger,
-		Claims:    []schema.Claim{{Category: "exec.eval", Line: 1, LineHash: hash("g2")}},
+		Claims:    []schema.Claim{{Category: "exec.eval", Line: 1, LineSHA256: hash64("ad")}},
 	}
 	b2 := schema.RecordBody{
-		Schema:    schema.SchemaAuditV1,
-		Version:   schema.SchemaVersion,
-		CreatedAt: "2024-01-01T00:00:01Z",
-		Target:    "https://example.com/x",
-		Hash:      hash("g3"),
-		Size:      1,
-		Analyzer:  "a1",
-		AnalyzerFamily: "static",
-		Verdict:   schema.VerdictOK,
-		PrevSHA256: hash("g1"),
+		Type:       schema.SchemaAuditV1,
+		CreatedAt:  1704067201,
+		Auditor:    hash64("a"),
+		Target:     schema.Target{URL: "https://example.com/x", SHA256: hash64("ae"), Size: 1},
+		Analyzer:   schema.Analyzer{Kind: schema.KindStatic},
+		Verdict:    schema.VerdictOK,
+		PrevSHA256: hash64("ac"),
 	}
-	recs := []VerifiedRecord{mk(b2), mk(b1)}
-	byID := NewRecordsByID(recs)
-	// b2 positive, plus 0.5*b1 negative.
-	r := Score(recs, byID)
+	cur := mk(b2)
+	prev := mk(b1)
+	r := Compute(Input{
+		TargetHash:   cur.Body.Target.SHA256,
+		Records:      []VerifiedRecord{cur},
+		Trust:        map[string]float64{cur.AuditorID: 1.0},
+		PriorRecords: []VerifiedRecord{prev},
+	})
 	if r.Positive <= 0 {
 		t.Fatalf("expected positive from ok: %.3f", r.Positive)
 	}
 	if r.Negative <= 0 {
 		t.Fatalf("expected negative from delta inheritance: %.3f", r.Negative)
 	}
-	if r.DeltaInheritance { // not currently set, placeholder
-		// field kept for future reporting
+	if !r.DeltaInheritance {
+		t.Fatal("expected delta inheritance flag")
 	}
 }
 
 func TestScoreFamilyDiversity(t *testing.T) {
 	b1 := schema.RecordBody{
-		Schema:    schema.SchemaAuditV1,
-		Version:   schema.SchemaVersion,
-		CreatedAt: "2024-01-01T00:00:00Z",
-		Target:    "https://example.com/x",
-		Hash:      hash("h1"),
-		Size:      1,
-		Analyzer:  "a1",
-		AnalyzerFamily: "static",
+		Type:      schema.SchemaAuditV1,
+		CreatedAt: 1704067200,
+		Auditor:   hash64("a"),
+		Target:    schema.Target{URL: "https://example.com/x", SHA256: hash64("ae"), Size: 1},
+		Analyzer:  schema.Analyzer{Kind: schema.KindStatic},
 		Verdict:   schema.VerdictOK,
 	}
 	b2 := schema.RecordBody{
-		Schema:    schema.SchemaAuditV1,
-		Version:   schema.SchemaVersion,
-		CreatedAt: "2024-01-01T00:00:00Z",
-		Target:    "https://example.com/x",
-		Hash:      hash("h2"),
-		Size:      1,
-		Analyzer:  "a2",
-		ModelFamily: "gpt",
-		Model:     "gpt-mini",
+		Type:      schema.SchemaAuditV1,
+		CreatedAt: 1704067200,
+		Auditor:   hash64("b"),
+		Target:    schema.Target{URL: "https://example.com/x", SHA256: hash64("ae"), Size: 1},
+		Analyzer:  schema.Analyzer{Kind: schema.KindLLM, ModelFamily: "gpt", Model: "gpt-mini"},
 		Verdict:   schema.VerdictOK,
 	}
 	recs := []VerifiedRecord{mk(b1), mk(b2)}
-	r := Score(recs, nil)
+	r := Compute(Input{
+		TargetHash: hash64("ae"),
+		Records:    recs,
+		Trust:      map[string]float64{recs[0].AuditorID: 1.0, recs[1].AuditorID: 1.0},
+	})
 	if r.FamiliesUsed != 2 {
 		t.Fatalf("expected 2 families, got %d", r.FamiliesUsed)
 	}
-	want := TrustDefault * (PositiveMultiplierBase + FamilyDiversityBonusPerExtra)
+	want := (1.0 + 1.0) * (PositiveMultiplierBase + FamilyDiversityBonusPerExtra)
 	if r.Positive < want-1e-9 || r.Positive > want+1e-9 {
 		t.Fatalf("expected positive %.3f, got %.3f", want, r.Positive)
 	}
 }
 
+func TestScoreDistinctKeyCount(t *testing.T) {
+	target := hash64("key-count")
+	static := VerifiedRecord{
+		ID:        "static",
+		AuditorID: "same-auditor",
+		Body: schema.RecordBody{
+			Type:      schema.SchemaAuditV1,
+			CreatedAt: 1,
+			Target:    schema.Target{SHA256: target},
+			Analyzer:  schema.Analyzer{Kind: schema.KindStatic},
+			Verdict:   schema.VerdictOK,
+		},
+	}
+	llm := VerifiedRecord{
+		ID:        "llm",
+		AuditorID: "same-auditor",
+		Body: schema.RecordBody{
+			Type:      schema.SchemaAuditV1,
+			CreatedAt: 2,
+			Target:    schema.Target{SHA256: target},
+			Analyzer:  schema.Analyzer{Kind: schema.KindLLM, ModelFamily: "qwen"},
+			Verdict:   schema.VerdictOK,
+		},
+	}
+	report := Compute(Input{
+		TargetHash: target,
+		Records:    []VerifiedRecord{static, llm},
+		Trust:      map[string]float64{"same-auditor": 1},
+	})
+	if report.SignalsUsed != 2 || report.FamiliesUsed != 2 || report.KeysUsed != 1 {
+		t.Fatalf("unexpected counts: signals=%d families=%d keys=%d", report.SignalsUsed, report.FamiliesUsed, report.KeysUsed)
+	}
+}
+
+func TestScoreDeltaSharedPredecessorInheritedOnce(t *testing.T) {
+	oldHash := hash64("old-shared")
+	newHash := hash64("new-shared")
+	prior := VerifiedRecord{
+		ID:        "prior",
+		AuditorID: "prior-auditor",
+		Body: schema.RecordBody{
+			Type:      schema.SchemaAuditV1,
+			CreatedAt: 1,
+			Target:    schema.Target{SHA256: oldHash},
+			Analyzer:  schema.Analyzer{Kind: schema.KindStatic},
+			Verdict:   schema.VerdictOK,
+		},
+	}
+	currentA := VerifiedRecord{
+		ID:        "current-a",
+		AuditorID: "auditor-a",
+		Body: schema.RecordBody{
+			Type:       schema.SchemaAuditV1,
+			CreatedAt:  2,
+			Target:     schema.Target{SHA256: newHash},
+			Analyzer:   schema.Analyzer{Kind: schema.KindStatic},
+			Verdict:    schema.VerdictOK,
+			PrevSHA256: oldHash,
+		},
+	}
+	currentB := VerifiedRecord{
+		ID:        "current-b",
+		AuditorID: "auditor-b",
+		Body: schema.RecordBody{
+			Type:       schema.SchemaAuditV1,
+			CreatedAt:  3,
+			Target:     schema.Target{SHA256: newHash},
+			Analyzer:   schema.Analyzer{Kind: schema.KindHuman},
+			Verdict:    schema.VerdictOK,
+			PrevSHA256: oldHash,
+		},
+	}
+	report := Compute(Input{
+		TargetHash:   newHash,
+		Records:      []VerifiedRecord{currentA, currentB},
+		PriorRecords: []VerifiedRecord{prior},
+		Trust: map[string]float64{
+			"prior-auditor": 1,
+			"auditor-a":     1,
+			"auditor-b":     1,
+		},
+	})
+	// Direct score: two families => 2 * 1.2 = 2.4.
+	// One predecessor inheritance: 1 * 0.5 = 0.5.
+	const want = 2.9
+	if report.Positive < want-1e-9 || report.Positive > want+1e-9 {
+		t.Fatalf("shared predecessor was not inherited exactly once: got %.3f, want %.3f", report.Positive, want)
+	}
+}
+
+func TestScoreDeltaCycleTerminates(t *testing.T) {
+	hashA := hash64("cycle-a")
+	hashB := hash64("cycle-b")
+	a := VerifiedRecord{
+		ID:        "a",
+		AuditorID: "aud-a",
+		Body: schema.RecordBody{
+			Type:       schema.SchemaAuditV1,
+			CreatedAt:  1,
+			Target:     schema.Target{SHA256: hashA},
+			Analyzer:   schema.Analyzer{Kind: schema.KindStatic},
+			Verdict:    schema.VerdictOK,
+			PrevSHA256: hashB,
+		},
+	}
+	b := VerifiedRecord{
+		ID:        "b",
+		AuditorID: "aud-b",
+		Body: schema.RecordBody{
+			Type:       schema.SchemaAuditV1,
+			CreatedAt:  2,
+			Target:     schema.Target{SHA256: hashB},
+			Analyzer:   schema.Analyzer{Kind: schema.KindStatic},
+			Verdict:    schema.VerdictOK,
+			PrevSHA256: hashA,
+		},
+	}
+	report := Compute(Input{
+		TargetHash:   hashA,
+		Records:      []VerifiedRecord{a},
+		PriorRecords: []VerifiedRecord{b},
+		Trust:        map[string]float64{"aud-a": 1, "aud-b": 1},
+	})
+	if report.Positive < 1.49 || report.Positive > 1.51 {
+		t.Fatalf("cycle should inherit B once and stop, got %.3f", report.Positive)
+	}
+}
+
 func TestScoreCaution(t *testing.T) {
 	body := schema.RecordBody{
-		Schema:    schema.SchemaAuditV1,
-		Version:   schema.SchemaVersion,
-		CreatedAt: "2024-01-01T00:00:00Z",
-		Target:    "https://example.com/x",
-		Hash:      hash("i"),
-		Size:      1,
-		Analyzer:  "a1",
-		AnalyzerFamily: "static",
+		Type:      schema.SchemaAuditV1,
+		CreatedAt: 1704067200,
+		Auditor:   hash64("a"),
+		Target:    schema.Target{URL: "https://example.com/x", SHA256: hash64("ba"), Size: 1},
+		Analyzer:  schema.Analyzer{Kind: schema.KindStatic},
 		Verdict:   schema.VerdictInfo,
+	}
+	tr := mk(body)
+	r := Compute(Input{
+		TargetHash: tr.Body.Target.SHA256,
+		Records:    []VerifiedRecord{tr},
+	})
+	if r.Verdict != VerdictCaution {
+		t.Fatalf("expected caution, got %s", r.Verdict)
+	}
+}
+
+func TestScoreRetraction(t *testing.T) {
+	body := schema.RecordBody{
+		Type:      schema.SchemaAuditV1,
+		CreatedAt: 1704067200,
+		Auditor:   hash64("a"),
+		Target:    schema.Target{URL: "https://example.com/x", SHA256: hash64("x"), Size: 1},
+		Analyzer:  schema.Analyzer{Kind: schema.KindStatic},
+		Verdict:   schema.VerdictDanger,
+		Claims:    []schema.Claim{{Category: "priv.sudo", Line: 1, LineSHA256: hash64("c")}},
+	}
+	tr := mk(body)
+	retr := VerifiedRecord{
+		ID:        "retr",
+		AuditorID: tr.AuditorID,
+		Body: schema.RecordBody{
+			Type:      schema.SchemaRetractV1,
+			CreatedAt: 1704067201,
+			Auditor:   body.Auditor,
+			RecordID:  tr.ID,
+			Reason:    "false-positive",
+		},
+	}
+	r := Compute(Input{
+		TargetHash:  tr.Body.Target.SHA256,
+		Records:     []VerifiedRecord{tr},
+		Retractions: []VerifiedRecord{retr},
+		Trust:       map[string]float64{tr.AuditorID: 1.0},
+	})
+	if r.Verdict != VerdictUnknown {
+		t.Fatalf("expected unknown after retraction, got %s", r.Verdict)
+	}
+}
+
+func TestScoreDefaultTrustNearZero(t *testing.T) {
+	body := schema.RecordBody{
+		Type:      schema.SchemaAuditV1,
+		CreatedAt: 1704067200,
+		Auditor:   hash64("a"),
+		Target:    schema.Target{URL: "https://example.com/x", SHA256: hash64("z"), Size: 1},
+		Analyzer:  schema.Analyzer{Kind: schema.KindStatic},
+		Verdict:   schema.VerdictOK,
+	}
+	tr := mk(body)
+	r := Compute(Input{
+		TargetHash: tr.Body.Target.SHA256,
+		Records:    []VerifiedRecord{tr},
+	})
+	if r.Positive >= TrustedPositiveThreshold {
+		t.Fatalf("expected near-zero trust to stay below threshold, got %.3f", r.Positive)
+	}
+	if r.Verdict != VerdictCaution {
+		t.Fatalf("expected caution with near-zero trust, got %s", r.Verdict)
+	}
+}
+
+func TestScoreRealAuditor(t *testing.T) {
+	_, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pub := priv.Public().(ed25519.PublicKey)
+	aud := sha256.Sum256(pub)
+	body := schema.RecordBody{
+		Type:      schema.SchemaAuditV1,
+		CreatedAt: 1704067200,
+		Auditor:   hex.EncodeToString(aud[:]),
+		Target:    schema.Target{URL: "https://example.com/x", SHA256: hash64("bb"), Size: 1},
+		Analyzer:  schema.Analyzer{Kind: schema.KindStatic},
+		Verdict:   schema.VerdictOK,
+	}
+	rec, err := schema.Sign(body, priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	vbody, vAuditor, err := schema.Verify(rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, _ := schema.RecordID(*vbody)
+	vr := VerifiedRecord{ID: id, AuditorID: vAuditor, Body: *vbody, PublicKey: rec.PublicKey, Signature: rec.Signature}
+	r := Compute(Input{
+		TargetHash: vr.Body.Target.SHA256,
+		Records:    []VerifiedRecord{vr},
+		Trust:      map[string]float64{vr.AuditorID: 1.0},
+	})
+	if r.Verdict != VerdictTrusted {
+		t.Fatalf("expected trusted, got %s", r.Verdict)
+	}
+}
+
+func TestScoreOnlyTargetHash(t *testing.T) {
+	b1 := schema.RecordBody{
+		Type:      schema.SchemaAuditV1,
+		CreatedAt: 1704067200,
+		Auditor:   hash64("a"),
+		Target:    schema.Target{URL: "https://example.com/x", SHA256: hash64("t1"), Size: 1},
+		Analyzer:  schema.Analyzer{Kind: schema.KindStatic},
+		Verdict:   schema.VerdictOK,
+	}
+	b2 := schema.RecordBody{
+		Type:      schema.SchemaAuditV1,
+		CreatedAt: 1704067200,
+		Auditor:   hash64("b"),
+		Target:    schema.Target{URL: "https://example.com/y", SHA256: hash64("t2"), Size: 1},
+		Analyzer:  schema.Analyzer{Kind: schema.KindStatic},
+		Verdict:   schema.VerdictOK,
+	}
+	recs := []VerifiedRecord{mk(b1), mk(b2)}
+	r := Compute(Input{
+		TargetHash: hash64("t1"),
+		Records:    recs,
+		Trust:      map[string]float64{recs[0].AuditorID: 1.0, recs[1].AuditorID: 1.0},
+	})
+	if r.SignalsUsed != 1 {
+		t.Fatalf("expected only one signal for target t1, got %d", r.SignalsUsed)
+	}
+}
+
+func TestScoreRetractionDifferentAuditor(t *testing.T) {
+	body := schema.RecordBody{
+		Type:      schema.SchemaAuditV1,
+		CreatedAt: 1704067200,
+		Auditor:   hash64("a"),
+		Target:    schema.Target{URL: "https://example.com/x", SHA256: hash64("x"), Size: 1},
+		Analyzer:  schema.Analyzer{Kind: schema.KindStatic},
+		Verdict:   schema.VerdictDanger,
+		Claims:    []schema.Claim{{Category: "priv.sudo", Line: 1, LineSHA256: hash64("c")}},
+	}
+	tr := mk(body)
+	retr := VerifiedRecord{
+		ID:        "retr",
+		AuditorID: "aud-other",
+		Body: schema.RecordBody{
+			Type:      schema.SchemaRetractV1,
+			CreatedAt: 1704067201,
+			Auditor:   hash64("b"),
+			RecordID:  tr.ID,
+			Reason:    "false-positive",
+		},
+	}
+	r := Compute(Input{
+		TargetHash:  tr.Body.Target.SHA256,
+		Records:     []VerifiedRecord{tr},
+		Retractions: []VerifiedRecord{retr},
+		Trust:       map[string]float64{tr.AuditorID: 1.0},
+	})
+	if r.Verdict != VerdictFlagged {
+		t.Fatalf("expected retraction from other auditor not to apply, got %s", r.Verdict)
+	}
+}
+
+func TestScoreCompatibility(t *testing.T) {
+	body := schema.RecordBody{
+		Type:      schema.SchemaAuditV1,
+		CreatedAt: 1704067200,
+		Auditor:   hash64("a"),
+		Target:    schema.Target{URL: "https://example.com/x", SHA256: hash64("c"), Size: 1},
+		Analyzer:  schema.Analyzer{Kind: schema.KindStatic},
+		Verdict:   schema.VerdictOK,
 	}
 	r := Score([]VerifiedRecord{mk(body)}, nil)
 	if r.Verdict != VerdictCaution {
-		t.Fatalf("expected caution, got %s", r.Verdict)
+		t.Fatalf("expected caution with default near-zero trust, got %s", r.Verdict)
 	}
 }

@@ -1,0 +1,10 @@
+{
+  "name": "ebi-cloudflare-container",
+  "private": true,
+  "type": "module",
+  "devDependencies": {
+    "@cloudflare/containers": "latest",
+    "typescript": "latest",
+    "wrangler": "latest"
+  }
+}

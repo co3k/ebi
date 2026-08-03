@@ -1,0 +1,6 @@
+account_id = "replace-with-your-cloudflare-account-id"
+zone_id    = "replace-with-your-cloudflare-zone-id"
+r2_public_domain = "log.example.com"
+# r2_bucket_name        = "ebi-data"
+# rate_limit_threshold  = 10
+# rate_limit_action     = "block"

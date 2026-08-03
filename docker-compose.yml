@@ -1,0 +1,5 @@
+# Root docker-compose.yml is kept as a delegate to the self-hosted compose file.
+# See deploy/selfhost/docker-compose.yml for the full server + MinIO + monitor stack.
+
+include:
+  - deploy/selfhost/docker-compose.yml

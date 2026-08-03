@@ -1,0 +1,9 @@
+# Test data
+
+The files in `testdata/scripts/` are synthetic examples used for unit tests and demonstrations. They do not perform any real harmful action.
+
+These fixtures are released under the CC0 1.0 Universal Public Domain Dedication:
+
+https://creativecommons.org/publicdomain/zero/1.0/
+
+You may copy, modify, distribute, and use them, even for commercial purposes, without asking permission.

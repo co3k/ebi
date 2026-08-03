@@ -15,12 +15,12 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/co3k/ebi/pkg/appmeta"
+	"github.com/co3k/ebi/pkg/schema"
 )
 
 // Default size cap: 10 MiB.
@@ -38,14 +38,23 @@ type Fetched struct {
 
 // Options controls fetch behavior.
 type Options struct {
-	MaxBytes      int64
-	Timeout       time.Duration
-	AllowHTTP     bool // non-strict mode
-	StrictHTTPS   bool // server-side strict mode
-	MaxRedirects  int
-	UserAgent     string
-	Header        http.Header
-	TempDir       string
+	MaxBytes     int64
+	Timeout      time.Duration
+	AllowHTTP    bool // non-strict mode
+	StrictHTTPS  bool // server-side strict mode
+	MaxRedirects int
+	UserAgent    string
+	Header       http.Header
+	TempDir      string
+
+	// Resolver and Dialer are injectable for deterministic SSRF tests. When
+	// nil, net.DefaultResolver and net.Dialer are used.
+	Resolver hostResolver
+	Dialer   func(ctx context.Context, network, address string) (net.Conn, error)
+}
+
+type hostResolver interface {
+	LookupHost(ctx context.Context, host string) ([]string, error)
 }
 
 // DefaultOptions returns a conservative default configuration.
@@ -132,7 +141,7 @@ func FetchURL(ctx context.Context, rawURL string, opts Options) (*Fetched, error
 	client := &http.Client{
 		Timeout: opts.Timeout,
 		Transport: &http.Transport{
-			DialContext: safeDialContext(opts.StrictHTTPS),
+			DialContext: safeDialContextWith(opts.StrictHTTPS, opts.Resolver, opts.Dialer),
 		},
 	}
 	redirects := 0
@@ -238,40 +247,15 @@ func NormalizeURL(raw string) string {
 	if err != nil {
 		return raw
 	}
+	// Normalization must never retain URL credentials in records or logs. URL
+	// fetching rejects credentialed inputs earlier; this defensive stripping
+	// also keeps direct callers from accidentally persisting them.
 	u.User = nil
-	u.Fragment = ""
-	u.RawFragment = ""
-	u.Scheme = strings.ToLower(u.Scheme)
-	host := strings.ToLower(u.Hostname())
-	port := u.Port()
-	if port != "" {
-		if (u.Scheme == "http" && port == "80") || (u.Scheme == "https" && port == "443") {
-			port = ""
-		}
+	normalized, err := schema.NormalizeURL(u.String())
+	if err != nil {
+		return raw
 	}
-	if port != "" {
-		u.Host = net.JoinHostPort(host, port)
-	} else {
-		u.Host = host
-	}
-	if u.RawQuery != "" {
-		q, _ := url.ParseQuery(u.RawQuery)
-		keys := make([]string, 0, len(q))
-		for k := range q {
-			keys = append(keys, k)
-		}
-		sort.Strings(keys)
-		parts := []string{}
-		for _, k := range keys {
-			vals := q[k]
-			sort.Strings(vals)
-			for _, v := range vals {
-				parts = append(parts, url.QueryEscape(k)+"="+url.QueryEscape(v))
-			}
-		}
-		u.RawQuery = strings.Join(parts, "&")
-	}
-	return u.String()
+	return normalized
 }
 
 func tempFile(dir string) (*os.File, error) {
@@ -308,11 +292,25 @@ func validateURL(u *url.URL, strict, allowHTTP bool) error {
 }
 
 func safeDialContext(strict bool) func(ctx context.Context, network, address string) (net.Conn, error) {
-	resolver := net.DefaultResolver
+	return safeDialContextWith(strict, nil, nil)
+}
+
+func safeDialContextWith(strict bool, resolver hostResolver, dial func(context.Context, string, string) (net.Conn, error)) func(ctx context.Context, network, address string) (net.Conn, error) {
+	if resolver == nil {
+		resolver = net.DefaultResolver
+	}
+	if dial == nil {
+		d := &net.Dialer{Timeout: 10 * time.Second}
+		dial = d.DialContext
+	}
 	return func(ctx context.Context, network, address string) (net.Conn, error) {
-		host, _, err := net.SplitHostPort(address)
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		host, port, err := net.SplitHostPort(address)
 		if err != nil {
 			host = address
+			port = ""
 		}
 		ips, err := resolver.LookupHost(ctx, host)
 		if err != nil {
@@ -321,17 +319,36 @@ func safeDialContext(strict bool) func(ctx context.Context, network, address str
 		if len(ips) == 0 {
 			return nil, fmt.Errorf("no ips for %s", host)
 		}
+		var allowed []net.IP
 		for _, ipStr := range ips {
 			ip := net.ParseIP(ipStr)
 			if ip == nil {
-				continue
+				return nil, fmt.Errorf("invalid resolved ip %q for host %s", ipStr, host)
 			}
 			if isBadIP(ip, strict) {
-				return nil, fmt.Errorf("disallowed ip %s for host %s", ipStr, host)
+				// Reject mixed public/private DNS answers rather than selecting
+				// an apparently safe address. Otherwise an attacker can use
+				// address order or rebinding to steer a later connection.
+				return nil, fmt.Errorf("disallowed ip %s for host %s", ip, host)
 			}
+			allowed = append(allowed, ip)
 		}
-		d := net.Dialer{Timeout: 10 * time.Second}
-		return d.DialContext(ctx, network, address)
+		if len(allowed) == 0 {
+			return nil, fmt.Errorf("disallowed ip for host %s", host)
+		}
+		var lastErr error
+		for _, ip := range allowed {
+			dialAddr := ip.String()
+			if port != "" {
+				dialAddr = net.JoinHostPort(dialAddr, port)
+			}
+			conn, err := dial(ctx, network, dialAddr)
+			if err == nil {
+				return conn, nil
+			}
+			lastErr = err
+		}
+		return nil, fmt.Errorf("dial resolved addresses for %s: %w", host, lastErr)
 	}
 }
 
@@ -346,34 +363,43 @@ func isBadIP(ip net.IP, strict bool) bool {
 		return strict
 	}
 	if strict {
-		// IPv4 reserved / documentation ranges.
-		if ones, _ := ip.DefaultMask().Size(); ones == 8 && ip[0] == 0 {
-			return true
-		}
-		if ip4 := ip.To4(); ip4 != nil {
-			if ip4[0] == 192 && ip4[1] == 0 && ip4[2] == 0 { // 192.0.0.0/24
-				return true
-			}
-			if ip4[0] == 192 && ip4[1] == 0 && ip4[2] == 2 { // 192.0.2.0/24 TEST-NET
-				return true
-			}
-			if ip4[0] == 198 && ip4[1] == 51 && ip4[2] == 100 { // 198.51.100.0/24
-				return true
-			}
-			if ip4[0] == 203 && ip4[1] == 0 && ip4[2] == 113 { // 203.0.113.0/24
-				return true
-			}
-			if ip4[0] >= 240 && ip4[0] < 255 { // IPv4 reserved class E
-				return true
-			}
-			if ip4[0] == 255 { // limited broadcast
-				return true
-			}
-		}
-		if ip.IsIPv4MappedIPv6() {
+		// Handle IPv4-mapped IPv6 by checking the IPv4 part.
+		if len(ip) == net.IPv6len && ip[0] == 0xff && ip[1] == 0xff && ip[2] == 0 && ip[3] == 0 && ip[4] == 0 && ip[5] == 0 && ip[6] == 0 && ip[7] == 0 && ip[8] == 0 && ip[9] == 0 && ip[10] == 0 && ip[11] == 0 {
 			ip4 := ip.To4()
-			return isBadIP(ip4, strict)
+			if ip4 != nil {
+				return isBadIPv4(ip4)
+			}
 		}
+		ip4 := ip.To4()
+		if ip4 != nil {
+			return isBadIPv4(ip4)
+		}
+	}
+	return false
+}
+
+func isBadIPv4(ip net.IP) bool {
+	// 0.0.0.0/8 (this-host, already covered by IsUnspecified but explicit here).
+	if ip[0] == 0 {
+		return true
+	}
+	if ip[0] == 192 && ip[1] == 0 && ip[2] == 0 { // 192.0.0.0/24
+		return true
+	}
+	if ip[0] == 192 && ip[1] == 0 && ip[2] == 2 { // 192.0.2.0/24 TEST-NET
+		return true
+	}
+	if ip[0] == 198 && ip[1] == 51 && ip[2] == 100 { // 198.51.100.0/24 TEST-NET-2
+		return true
+	}
+	if ip[0] == 203 && ip[1] == 0 && ip[2] == 113 { // 203.0.113.0/24 TEST-NET-3
+		return true
+	}
+	if ip[0] >= 240 && ip[0] < 255 { // IPv4 reserved class E
+		return true
+	}
+	if ip[0] == 255 { // limited broadcast
+		return true
 	}
 	return false
 }

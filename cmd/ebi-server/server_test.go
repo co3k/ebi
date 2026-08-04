@@ -771,6 +771,48 @@ func TestRestartPreservesState(t *testing.T) {
 	}
 }
 
+func TestStartSequencerInitializesMissingCheckpointState(t *testing.T) {
+	ctx := t.Context()
+	cfg := DefaultServerConfig()
+	cfg.DataDir = t.TempDir()
+	cfg.LogKeyFile = filepath.Join(cfg.DataDir, "log-key")
+	cfg.CheckpointState = filepath.Join(cfg.DataDir, "checkpoint-state")
+
+	first, err := NewServer(ctx, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := first.StartSequencer(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := first.Shutdown(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(cfg.CheckpointState); err != nil {
+		t.Fatal(err)
+	}
+
+	second, err := NewServer(ctx, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Shutdown(ctx)
+	if err := second.StartSequencer(ctx); err != nil {
+		t.Fatal(err)
+	}
+	tree, signed, err := tlogx.LoadCheckpointState(cfg.CheckpointState)
+	if err != nil {
+		t.Fatalf("checkpoint state was not initialized: %v", err)
+	}
+	published, _, err := tlogx.ReadCheckpoint(second.Store(), second.Policy())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tree != published || len(signed) == 0 {
+		t.Fatalf("initialized state does not match published checkpoint: state=%v published=%v", tree, published)
+	}
+}
+
 func TestDuplicateRecord(t *testing.T) {
 	s, cleanup := newTestServer(t)
 	defer cleanup()
@@ -1429,6 +1471,57 @@ func TestMirrorImportTakesServerLock(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("mirror import did not resume after server lock release")
+	}
+}
+
+func TestMirrorImportRefreshesInMemoryTree(t *testing.T) {
+	source, sourceCleanup := newTestServer(t)
+	defer sourceCleanup()
+	fetcher := newTestFetcher()
+	source.SetFetcher(fetcher)
+
+	key := newAuditorKey(t)
+	targetURL := "https://example.com/mirror-import.sh"
+	content := []byte("echo mirror\n")
+	fetcher.set(targetURL, content)
+	rec := makeAuditRecord(t, key, targetURL, content, nil)
+	payload, _ := marshalSubmit(rec)
+	mustStatus(t, postJSON(t, source.Handler(), "/v1/records", payload), http.StatusAccepted)
+
+	var archive bytes.Buffer
+	if _, err := source.CreateSnapshot(t.Context(), &archive); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := DefaultServerConfig()
+	cfg.DataDir = t.TempDir()
+	cfg.LogKeyFile = filepath.Join(cfg.DataDir, "log-key")
+	cfg.CheckpointState = filepath.Join(cfg.DataDir, "checkpoint-state")
+	cfg.PolicyPath = filepath.Join(cfg.DataDir, "policy.toml")
+	if err := tlogx.SavePolicy(cfg.PolicyPath, source.Policy()); err != nil {
+		t.Fatal(err)
+	}
+	target, err := NewServer(t.Context(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer target.Shutdown(t.Context())
+	if err := target.StartSequencer(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err := target.ImportSnapshot(t.Context(), bytes.NewReader(archive.Bytes()), "mirror"); err != nil {
+		t.Fatal(err)
+	}
+	if target.Tree().Size() != source.Tree().Size() || target.treeSize.Load() != source.Tree().Size() {
+		t.Fatalf("mirror import did not refresh tree: in-memory=%d atomic=%d source=%d",
+			target.Tree().Size(), target.treeSize.Load(), source.Tree().Size())
+	}
+	stateTree, _, err := tlogx.LoadCheckpointState(cfg.CheckpointState)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stateTree != target.Tree().TlogTree() {
+		t.Fatalf("mirror checkpoint state mismatch: state=%v tree=%v", stateTree, target.Tree().TlogTree())
 	}
 }
 

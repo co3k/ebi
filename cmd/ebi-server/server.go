@@ -340,6 +340,10 @@ func (s *Server) StartSequencer(ctx context.Context) error {
 			_ = s.releaseLease(ctx)
 			return fmt.Errorf("rebuild prefix shards: %w", err)
 		}
+		if err := s.ensureCheckpointState(ctx); err != nil {
+			_ = s.releaseLease(ctx)
+			return fmt.Errorf("initialize checkpoint state: %w", err)
+		}
 	}
 	if err := s.cleanupUnreferencedContentBlobs(ctx); err != nil {
 		_ = s.releaseLease(ctx)
@@ -351,6 +355,23 @@ func (s *Server) StartSequencer(ctx context.Context) error {
 	go s.runSequencer()
 	s.kickWitnessRetry()
 	return nil
+}
+
+func (s *Server) ensureCheckpointState(ctx context.Context) error {
+	if _, err := os.Stat(s.checkpointState); err == nil {
+		return nil
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	data, err := s.store.Get(ctx, storage.CheckpointPath())
+	if err != nil {
+		return err
+	}
+	tree, _, err := tlogx.VerifyCheckpoint(data, s.policy)
+	if err != nil {
+		return err
+	}
+	return tlogx.SaveCheckpointState(s.checkpointState, tree, data)
 }
 
 // StartHTTP starts the HTTP listener in a goroutine.
@@ -1695,8 +1716,27 @@ func (s *Server) ImportSnapshot(ctx context.Context, r io.Reader, mode string) e
 	case "mirror":
 		s.mu.Lock()
 		defer s.mu.Unlock()
-		_, err := snapshot.ImportMirrorWithPolicy(r, s.store, s.policy)
-		return err
+		if _, err := snapshot.ImportMirrorWithPolicy(r, s.store, s.policy); err != nil {
+			return err
+		}
+		leaves, err := tlogx.LoadLeavesFromIndex(s.store)
+		if err != nil {
+			return fmt.Errorf("load imported mirror leaves: %w", err)
+		}
+		tree, err := tlogx.LoadTree(leaves)
+		if err != nil {
+			return fmt.Errorf("load imported mirror tree: %w", err)
+		}
+		s.tree = tree
+		s.treeSize.Store(tree.Size())
+		checkpoint, err := s.store.Get(ctx, storage.CheckpointPath())
+		if err != nil {
+			return fmt.Errorf("read imported mirror checkpoint: %w", err)
+		}
+		if err := tlogx.SaveCheckpointState(s.checkpointState, tree.TlogTree(), checkpoint); err != nil {
+			return fmt.Errorf("save imported mirror checkpoint state: %w", err)
+		}
+		return nil
 	case "fork":
 		s.mu.Lock()
 		defer s.mu.Unlock()

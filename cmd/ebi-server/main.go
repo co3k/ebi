@@ -80,7 +80,14 @@ func exportCheckpointState(path string, w io.Writer) error {
 		return err
 	}
 	defer f.Close()
-	_, err = io.Copy(w, io.LimitReader(f, maxCheckpointStateBytes+1))
+	data, err := io.ReadAll(io.LimitReader(f, maxCheckpointStateBytes+1))
+	if err != nil {
+		return err
+	}
+	if int64(len(data)) > maxCheckpointStateBytes {
+		return fmt.Errorf("checkpoint state exceeds 1 MiB")
+	}
+	_, err = w.Write(data)
 	return err
 }
 

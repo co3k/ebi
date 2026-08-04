@@ -49,6 +49,20 @@ func TestExportCheckpointState(t *testing.T) {
 	}
 }
 
+func TestExportCheckpointStateRejectsOversizeFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "checkpoint-state")
+	if err := os.WriteFile(path, make([]byte, (1<<20)+1), 0600); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if err := exportCheckpointState(path, &out); err == nil {
+		t.Fatal("expected oversized checkpoint state to be rejected")
+	}
+	if out.Len() != 0 {
+		t.Fatal("oversized checkpoint state was partially exported")
+	}
+}
+
 func TestHealth(t *testing.T) {
 	s, cleanup := newTestServer(t)
 	defer cleanup()

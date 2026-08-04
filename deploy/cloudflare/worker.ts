@@ -103,7 +103,11 @@ export class EbiServer extends Container<EbiContainerEnv> {
       return response;
     }
     const body = await response.arrayBuffer();
-    await this.persistCheckpointState();
+    try {
+      await this.persistCheckpointState();
+    } catch (error) {
+      console.error("checkpoint-state persistence failed", error);
+    }
     return new Response(body, {
       status: response.status,
       statusText: response.statusText,
@@ -112,7 +116,13 @@ export class EbiServer extends Container<EbiContainerEnv> {
   }
 
   override async onActivityExpired(): Promise<void> {
-    await this.persistCheckpointState();
+    try {
+      await this.persistCheckpointState();
+    } catch (error) {
+      console.error("checkpoint-state persistence failed; keeping container active", error);
+      this.renewActivityTimeout();
+      return;
+    }
     await super.onActivityExpired();
   }
 }

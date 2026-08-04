@@ -477,7 +477,7 @@ func executeFlow(rawURL string, stdin io.Reader, f runFlags, scriptArgs []string
 				fmt.Fprintln(os.Stderr, "contribution: target URL is required")
 				return res.ExitCode
 			}
-			if err := q.Enqueue(localRec, cfg.ContributionDelayHours > 0); err != nil {
+			if err := q.Enqueue(localRec, cfg.ContributionDelayHours); err != nil {
 				fmt.Fprintf(os.Stderr, "enqueue: %v\n", err)
 				return res.ExitCode
 			}
@@ -777,6 +777,23 @@ func resolveDeltaHash(ctx context.Context, delta string, fetched *fetch.Fetched,
 func showDiff(oldPath, newPath string) {
 	oldData, _ := os.ReadFile(oldPath)
 	newData, _ := os.ReadFile(newPath)
+	detector, err := secrets.NewDetector()
+	if err != nil {
+		fmt.Println("diff: unavailable (secret detector initialization failed)")
+		return
+	}
+	oldFindings, err := detector.ScanBytes(oldData)
+	if err != nil {
+		fmt.Println("diff: unavailable (secret scan failed)")
+		return
+	}
+	newFindings, err := detector.ScanBytes(newData)
+	if err != nil {
+		fmt.Println("diff: unavailable (secret scan failed)")
+		return
+	}
+	oldSensitive := findingLines(oldFindings)
+	newSensitive := findingLines(newFindings)
 	oldLines := strings.Split(string(oldData), "\n")
 	newLines := strings.Split(string(newData), "\n")
 	max := len(oldLines)
@@ -794,10 +811,25 @@ func showDiff(oldPath, newPath string) {
 			newLine = newLines[i]
 		}
 		if oldLine != newLine {
-			fmt.Printf("-%d: %s\n", i+1, oldLine)
-			fmt.Printf("+%d: %s\n", i+1, newLine)
+			fmt.Printf("-%d: %s\n", i+1, safeDiffLine(oldLine, oldSensitive[i+1]))
+			fmt.Printf("+%d: %s\n", i+1, safeDiffLine(newLine, newSensitive[i+1]))
 		}
 	}
+}
+
+func findingLines(findings []secrets.Finding) map[int]bool {
+	lines := make(map[int]bool, len(findings))
+	for _, finding := range findings {
+		lines[finding.Line] = true
+	}
+	return lines
+}
+
+func safeDiffLine(line string, sensitive bool) string {
+	if sensitive {
+		return "[REDACTED]"
+	}
+	return schema.SafeExcerpt(line, 240)
 }
 
 func normalizeHTTPSURL(raw string) (string, error) {

@@ -54,6 +54,17 @@ func TestAnalyzeRemotePipe(t *testing.T) {
 	}
 }
 
+func TestAnalyzeRejectsControlCharactersInSecondStageURL(t *testing.T) {
+	script := "curl 'https://example.com/install.sh\x1b[2J' | sh\n"
+	res, err := AnalyzeScript([]byte(script), "x.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.SecondStage) != 0 {
+		t.Fatalf("control-character URL reached display output: %+v", res.SecondStage)
+	}
+}
+
 func TestAnalyzeSudo(t *testing.T) {
 	script := "sudo apt install evil\n"
 	res, err := AnalyzeScript([]byte(script), "x.sh")

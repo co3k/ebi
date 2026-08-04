@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"unicode"
 
 	"github.com/co3k/ebi/pkg/schema"
 	"mvdan.cc/sh/v3/syntax"
@@ -393,6 +394,10 @@ func addSecondStage(res *Result, url string, line int, lineStr string) {
 	if url == "" || !isURL(url) {
 		return
 	}
+	normalized, err := schema.NormalizeURL(url)
+	if err != nil || normalized != url {
+		return
+	}
 	// Stable dedupe.
 	for _, s := range res.SecondStage {
 		if s.URLPattern == url {
@@ -611,7 +616,10 @@ func stripLeadingPunct(s string) string {
 }
 
 func isURL(s string) bool {
-	return strings.HasPrefix(s, "http://") || strings.HasPrefix(s, "https://") || strings.HasPrefix(s, "ftp://")
+	if strings.ContainsFunc(s, unicode.IsControl) {
+		return false
+	}
+	return strings.HasPrefix(s, "http://") || strings.HasPrefix(s, "https://")
 }
 
 func truncate(s string, max int) string {

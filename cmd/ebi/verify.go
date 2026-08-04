@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -34,6 +35,8 @@ type remoteStore struct {
 }
 
 const remoteObjectLimit = int64(1 << 20)
+
+var mirrorHTTPClient = &http.Client{Timeout: 30 * time.Second}
 
 func newRemoteStore(mirror string) *remoteStore {
 	return &remoteStore{
@@ -131,22 +134,44 @@ func loadCheckpointState(cfg config.Config) (tlog.Tree, []byte, error) {
 }
 
 func mirrorURL(cfg config.Config) string {
+	var raw string
 	if cfg.MirrorURL != "" {
-		return cfg.MirrorURL
+		raw = cfg.MirrorURL
+	} else if len(cfg.ServerURLs) > 0 {
+		raw = cfg.ServerURLs[0]
 	}
-	if len(cfg.ServerURLs) > 0 {
-		return cfg.ServerURLs[0]
+	if raw == "" {
+		return ""
 	}
-	return ""
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" || u.User != nil {
+		return ""
+	}
+	if u.Scheme != "https" && !(u.Scheme == "http" && isLoopbackHost(u.Hostname())) {
+		return ""
+	}
+	return strings.TrimSuffix(u.String(), "/")
+}
+
+func isLoopbackHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func isNetworkError(err error) bool {
 	if err == nil {
 		return false
 	}
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) {
+		return true
+	}
 	var netErr net.Error
 	if errors.As(err, &netErr) {
-		return netErr.Timeout() || netErr.Temporary()
+		return true
 	}
 	return false
 }
@@ -158,7 +183,7 @@ func fetchMirrorBytes(ctx context.Context, mirror, path string) ([]byte, int, er
 		return nil, 0, err
 	}
 	req.Header.Set("User-Agent", appmeta.UserAgent())
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := mirrorHTTPClient.Do(req)
 	if err != nil {
 		return nil, 0, err
 	}

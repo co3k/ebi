@@ -4,8 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -311,6 +314,72 @@ func TestSecretLineRedactsDisplayedClaims(t *testing.T) {
 	redactClaimExcerpts(claims, []secrets.Finding{{Line: 2, RuleID: "github-pat"}})
 	if claims[0].Excerpt != "safe" || claims[1].Excerpt != "[REDACTED]" {
 		t.Fatalf("unexpected excerpt redaction: %+v", claims)
+	}
+}
+
+func TestShowDiffRedactsSecretLines(t *testing.T) {
+	oldPath := filepath.Join(t.TempDir(), "old.sh")
+	newPath := filepath.Join(t.TempDir(), "new.sh")
+	const secret = "ghp_1234567890abcdef1234567890abcdef1234"
+	if err := os.WriteFile(oldPath, []byte("echo safe\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(newPath, []byte("export GITHUB_TOKEN="+secret+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	out := captureOutput(t, func() { showDiff(oldPath, newPath) })
+	if strings.Contains(out, secret) {
+		t.Fatalf("diff leaked secret text: %s", out)
+	}
+	if !strings.Contains(out, "+1: [REDACTED]") {
+		t.Fatalf("diff did not redact the secret line: %s", out)
+	}
+}
+
+func TestMirrorURLRequiresHTTPS(t *testing.T) {
+	if got := mirrorURL(config.Config{MirrorURL: "http://mirror.example"}); got != "" {
+		t.Fatalf("accepted insecure mirror URL: %q", got)
+	}
+	if got := mirrorURL(config.Config{MirrorURL: "https://user@example.com"}); got != "" {
+		t.Fatalf("accepted mirror URL credentials: %q", got)
+	}
+	if got := mirrorURL(config.Config{MirrorURL: "https://mirror.example/"}); got != "https://mirror.example" {
+		t.Fatalf("unexpected normalized mirror URL: %q", got)
+	}
+}
+
+func TestIsNetworkErrorIncludesConnectionFailures(t *testing.T) {
+	for _, err := range []error{
+		&url.Error{Op: "Get", URL: "https://mirror.example", Err: errors.New("connection refused")},
+		&net.DNSError{Name: "missing.invalid", Err: "no such host"},
+	} {
+		if !isNetworkError(err) {
+			t.Fatalf("expected network error classification for %T: %v", err, err)
+		}
+	}
+	if isNetworkError(errors.New("invalid checkpoint signature")) {
+		t.Fatal("classified integrity error as a network error")
+	}
+}
+
+func TestFetchMirrorBytesUsesBoundedClientTimeout(t *testing.T) {
+	orig := mirrorHTTPClient
+	mirrorHTTPClient = &http.Client{Timeout: 20 * time.Millisecond}
+	defer func() { mirrorHTTPClient = orig }()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(200 * time.Millisecond)
+		_, _ = w.Write([]byte("late"))
+	}))
+	defer srv.Close()
+
+	start := time.Now()
+	_, _, err := fetchMirrorBytes(t.Context(), srv.URL, "v1/checkpoint")
+	if err == nil || !isNetworkError(err) {
+		t.Fatalf("expected bounded network timeout, got %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 150*time.Millisecond {
+		t.Fatalf("mirror request ignored client timeout: %v", elapsed)
 	}
 }
 

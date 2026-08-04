@@ -290,6 +290,8 @@ func serverConfigFromFlags(fs *flag.FlagSet, args []string) (ServerConfig, error
 	checkpointState := fs.String("checkpoint-state", envString("EBI_CHECKPOINT_STATE", ""), "path to checkpoint state file")
 	fetchTimeout := fs.Duration("fetch-timeout", envDuration("EBI_FETCH_TIMEOUT", cfg.FetchTimeout), "per-fetch timeout")
 	requestTimeout := fs.Duration("request-timeout", envDuration("EBI_REQUEST_TIMEOUT", cfg.RequestTimeout), "per-request timeout")
+	submissionLimit := fs.Int("submission-rate-limit", envInt("EBI_SUBMISSION_RATE_LIMIT", cfg.SubmissionLimit), "submissions allowed per client in one window")
+	submissionWindow := fs.Duration("submission-rate-window", envDuration("EBI_SUBMISSION_RATE_WINDOW", cfg.SubmissionWindow), "submission rate-limit window")
 	witnessKeys := fs.String("witness-keys", envString("EBI_WITNESS_KEYS", ""), "comma-separated witness verifier keys")
 	witnessURLs := fs.String("witness-urls", envString("EBI_WITNESS_URLS", ""), "comma-separated witness submission URL prefixes")
 	requiredWitnesses := fs.Int("required-witnesses", envInt("EBI_REQUIRED_WITNESSES", 0), "required witness quorum")
@@ -306,6 +308,8 @@ func serverConfigFromFlags(fs *flag.FlagSet, args []string) (ServerConfig, error
 	cfg.CheckpointState = *checkpointState
 	cfg.FetchTimeout = *fetchTimeout
 	cfg.RequestTimeout = *requestTimeout
+	cfg.SubmissionLimit = *submissionLimit
+	cfg.SubmissionWindow = *submissionWindow
 	cfg.WitnessKeys = splitKeys(*witnessKeys)
 	cfg.WitnessURLs = splitKeys(*witnessURLs)
 	cfg.RequiredWitnesses = *requiredWitnesses

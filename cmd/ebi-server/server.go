@@ -61,16 +61,20 @@ type ServerConfig struct {
 	CheckpointState   string
 	FetchTimeout      time.Duration
 	RequestTimeout    time.Duration
+	SubmissionLimit   int
+	SubmissionWindow  time.Duration
 }
 
 // DefaultServerConfig returns the default configuration.
 func DefaultServerConfig() ServerConfig {
 	return ServerConfig{
-		Port:           "8080",
-		DataDir:        "./data",
-		LogOrigin:      "ebi.example.com",
-		FetchTimeout:   30 * time.Second,
-		RequestTimeout: 60 * time.Second,
+		Port:             "8080",
+		DataDir:          "./data",
+		LogOrigin:        "ebi.example.com",
+		FetchTimeout:     30 * time.Second,
+		RequestTimeout:   60 * time.Second,
+		SubmissionLimit:  60,
+		SubmissionWindow: time.Minute,
 	}
 }
 
@@ -124,6 +128,8 @@ type Server struct {
 	wg              sync.WaitGroup
 	witnessRetrying atomic.Bool
 	mu              sync.RWMutex
+	rateMu          sync.Mutex
+	rateWindows     map[string]submissionWindow
 	httpServer      *http.Server
 	listener        net.Listener
 }
@@ -228,6 +234,7 @@ func NewServer(ctx context.Context, cfg ServerConfig) (*Server, error) {
 		fetchTimeout:    cfg.FetchTimeout,
 		witnessURLs:     append([]string(nil), cfg.WitnessURLs...),
 		fetcher:         defaultFetcher,
+		rateWindows:     make(map[string]submissionWindow),
 	}
 	s.treeSize.Store(tree.Size())
 	return s, nil
@@ -427,8 +434,8 @@ func (s *Server) Shutdown(ctx context.Context) error {
 // Handler returns the HTTP handler for the server.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.Handle("/v1/records", s.withMethod(http.MethodPost, s.withTimeout(s.handleRecords)))
-	mux.Handle("/v1/reports", s.withMethod(http.MethodPost, s.withTimeout(s.handleReports)))
+	mux.Handle("/v1/records", s.withMethod(http.MethodPost, s.withSubmissionLimit(s.withTimeout(s.handleRecords))))
+	mux.Handle("/v1/reports", s.withMethod(http.MethodPost, s.withSubmissionLimit(s.withTimeout(s.handleReports))))
 	mux.Handle("/healthz", s.withMethod(http.MethodGet, s.handleHealth))
 	return s.withSecurity(mux)
 }
@@ -520,6 +527,13 @@ func (s *Server) sequenceRecordLocked(
 	}
 	for _, index := range indexes {
 		if index.RecordID == id {
+			current, err := s.publishedCheckpointIsCurrent(ctx)
+			if err != nil {
+				return jobResult{recordID: id, err: fmt.Errorf("read checkpoint for duplicate record: %w", err)}
+			}
+			if current {
+				return jobResult{recordID: id, warning: "duplicate record"}
+			}
 			published, err := s.reconcileDerivedLocked(ctx)
 			if err != nil {
 				return jobResult{recordID: id, err: fmt.Errorf("reconcile duplicate record: %w", err)}
@@ -1299,6 +1313,10 @@ func (s *Server) handleReports(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("store report: %v", err)})
 		return
 	}
+	if err := s.store.Delete(r.Context(), "v1/pending/"+req.RecordID); err != nil && !storage.IsNotFound(err) {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("clear pending report state: %v", err)})
+		return
+	}
 	writeJSON(w, http.StatusAccepted, map[string]interface{}{
 		"record_id": req.RecordID,
 		"status":    "reported",
@@ -1615,6 +1633,57 @@ func (s *Server) withTimeout(h http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+type submissionWindow struct {
+	start time.Time
+	count int
+}
+
+func (s *Server) withSubmissionLimit(h http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if s.cfg.SubmissionLimit <= 0 || s.cfg.SubmissionWindow <= 0 {
+			h(w, r)
+			return
+		}
+		now := time.Now()
+		key := submissionRateKey(r.RemoteAddr)
+		s.rateMu.Lock()
+		for existingKey, window := range s.rateWindows {
+			if now.Sub(window.start) >= s.cfg.SubmissionWindow {
+				delete(s.rateWindows, existingKey)
+			}
+		}
+		window, ok := s.rateWindows[key]
+		if !ok {
+			window = submissionWindow{start: now}
+		}
+		if window.count >= s.cfg.SubmissionLimit {
+			retry := time.Until(window.start.Add(s.cfg.SubmissionWindow))
+			s.rateMu.Unlock()
+			if retry < time.Second {
+				retry = time.Second
+			}
+			w.Header().Set("Retry-After", fmt.Sprintf("%d", int(retry.Round(time.Second)/time.Second)))
+			writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "submission rate limit exceeded"})
+			return
+		}
+		window.count++
+		s.rateWindows[key] = window
+		s.rateMu.Unlock()
+		h(w, r)
+	}
+}
+
+func submissionRateKey(remoteAddr string) string {
+	host, _, err := net.SplitHostPort(remoteAddr)
+	if err == nil && host != "" {
+		return host
+	}
+	if remoteAddr == "" {
+		return "unknown"
+	}
+	return remoteAddr
+}
+
 func writeJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
@@ -1814,6 +1883,12 @@ func withDefaults(cfg ServerConfig) ServerConfig {
 	}
 	if cfg.RequestTimeout == 0 {
 		cfg.RequestTimeout = DefaultServerConfig().RequestTimeout
+	}
+	if cfg.SubmissionLimit == 0 {
+		cfg.SubmissionLimit = DefaultServerConfig().SubmissionLimit
+	}
+	if cfg.SubmissionWindow == 0 {
+		cfg.SubmissionWindow = DefaultServerConfig().SubmissionWindow
 	}
 	return cfg
 }

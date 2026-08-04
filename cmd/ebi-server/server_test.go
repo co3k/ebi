@@ -966,6 +966,11 @@ func TestMismatchPendingAndReport(t *testing.T) {
 	if _, err := s.Store().Get(ctx, "v1/reports/"+recordID+".json"); err != nil {
 		t.Fatalf("report not stored: %v", err)
 	}
+	if _, err := s.Store().Get(ctx, "v1/pending/"+recordID); !storage.IsNotFound(err) {
+		t.Fatalf("resolved pending record was not cleared: %v", err)
+	}
+	w7 := postJSON(t, s.Handler(), "/v1/reports", b5)
+	mustStatus(t, w7, http.StatusBadRequest)
 }
 
 func TestTombstone(t *testing.T) {
@@ -1290,6 +1295,37 @@ func TestPendingLookupErrorFailsClosed(t *testing.T) {
 	if s.Tree().Size() != 0 {
 		t.Fatalf("pending lookup failure appended a leaf: %d", s.Tree().Size())
 	}
+}
+
+func TestSubmissionRateLimit(t *testing.T) {
+	ctx := t.Context()
+	cfg := DefaultServerConfig()
+	cfg.DataDir = t.TempDir()
+	cfg.LogKeyFile = filepath.Join(cfg.DataDir, "log-key")
+	cfg.CheckpointState = filepath.Join(cfg.DataDir, "checkpoint-state")
+	cfg.SubmissionLimit = 1
+	cfg.SubmissionWindow = time.Minute
+	s, err := NewServer(ctx, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.StartSequencer(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer s.Shutdown(ctx)
+
+	badBody := []byte(`{}`)
+	first := postJSON(t, s.Handler(), "/v1/records", badBody)
+	mustStatus(t, first, http.StatusBadRequest)
+	second := postJSON(t, s.Handler(), "/v1/records", badBody)
+	mustStatus(t, second, http.StatusTooManyRequests)
+	if second.Header().Get("Retry-After") == "" {
+		t.Fatal("rate-limited response omitted Retry-After")
+	}
+
+	// Health checks are never subject to the submission limiter.
+	health := get(t, s.Handler(), "/healthz")
+	mustStatus(t, health, http.StatusOK)
 }
 
 func TestStaleWitnessedCheckpointRemainsPending(t *testing.T) {

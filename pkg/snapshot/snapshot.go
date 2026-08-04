@@ -1090,10 +1090,13 @@ func readArchive(r io.Reader, limits Limits) (*archiveInfo, error) {
 		}
 		totalUncompressed += header.Size
 	}
-	// Drain the compressed stream so the archive digest and compressed-size
-	// limit cover trailing bytes as well.
-	if _, err := io.Copy(io.Discard, zr); err != nil {
-		return nil, fmt.Errorf("drain zstd stream: %w", err)
+	// A valid tar stream has no decompressed payload after its end markers.
+	// Probe only one byte so a small, highly-compressed appended frame cannot
+	// force an unbounded decompression drain.
+	if n, err := io.CopyN(io.Discard, zr, 1); n > 0 {
+		return nil, fmt.Errorf("unexpected data after tar end")
+	} else if err != nil && err != io.EOF {
+		return nil, fmt.Errorf("finish zstd stream: %w", err)
 	}
 	if cw.n > limits.TotalBytes || compressed.N == 0 {
 		return nil, fmt.Errorf("compressed archive exceeds max %d", limits.TotalBytes)

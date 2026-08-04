@@ -291,6 +291,50 @@ func TestReadArchiveRejectsCompressedInputBeforeUnboundedDrain(t *testing.T) {
 	}
 }
 
+func TestReadArchiveRejectsCompressedTrailingFrame(t *testing.T) {
+	var archive bytes.Buffer
+	zw, err := zstd.NewWriter(&archive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tw := tar.NewWriter(zw)
+	if err := tw.WriteHeader(&tar.Header{
+		Name:     "small",
+		Mode:     0600,
+		Size:     1,
+		Typeflag: tar.TypeReg,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tw.Write([]byte("x")); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	var trailing bytes.Buffer
+	trailingWriter, err := zstd.NewWriter(&trailing)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := trailingWriter.Write(bytes.Repeat([]byte("z"), 8<<20)); err != nil {
+		t.Fatal(err)
+	}
+	if err := trailingWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	archive.Write(trailing.Bytes())
+
+	if _, err := readArchive(bytes.NewReader(archive.Bytes()), DefaultLimits()); err == nil ||
+		!strings.Contains(err.Error(), "unexpected data after tar end") {
+		t.Fatalf("expected trailing-frame rejection, got %v", err)
+	}
+}
+
 func TestVerifyWithCheckpointStateRejectsRollback(t *testing.T) {
 	ctx := context.Background()
 	_, priv, err := ed25519.GenerateKey(nil)

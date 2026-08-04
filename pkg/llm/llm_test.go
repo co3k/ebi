@@ -153,3 +153,51 @@ func TestClientAvailable(t *testing.T) {
 		t.Fatal("expected available")
 	}
 }
+
+func TestClientRefusesAPIKeyOverRemoteHTTP(t *testing.T) {
+	client := NewClient(Options{
+		Endpoint: "http://example.com/v1",
+		Model:    "test",
+		APIKey:   "secret",
+		Runs:     1,
+		HTTPClient: &http.Client{
+			Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+				t.Fatal("insecure request reached the HTTP transport")
+				return nil, nil
+			}),
+		},
+	})
+	if _, err := client.Analyze(t.Context(), "echo hello"); err == nil ||
+		!strings.Contains(err.Error(), "insecure non-loopback") {
+		t.Fatalf("expected insecure API key endpoint rejection, got %v", err)
+	}
+}
+
+func TestClientAllowsAPIKeyOverLoopbackHTTP(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer secret" {
+			t.Fatalf("missing API key header")
+		}
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"choices": []map[string]interface{}{
+				{"message": map[string]string{"content": `{"verdict":"ok","claims":[]}`}},
+			},
+		})
+	}))
+	defer ts.Close()
+	client := NewClient(Options{
+		Endpoint: ts.URL + "/v1",
+		Model:    "test",
+		APIKey:   "secret",
+		Runs:     1,
+	})
+	if _, err := client.Analyze(t.Context(), "echo hello"); err != nil {
+		t.Fatalf("loopback API key request failed: %v", err)
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}

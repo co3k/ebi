@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -224,6 +225,10 @@ func (c *Client) Analyze(ctx context.Context, script string) (*Result, error) {
 	endpoints := []string{c.opts.Endpoint}
 	if c.opts.Endpoint == "" {
 		endpoints = ProbeEndpoints(c.opts)
+	} else if c.opts.APIKey != "" {
+		if err := validateAPIKeyEndpoint(c.opts.Endpoint); err != nil {
+			return nil, err
+		}
 	}
 	prompt := BuildPrompt(script)
 	hash := PromptHash(prompt)
@@ -320,6 +325,9 @@ func (c *Client) doRequest(ctx context.Context, endpoint string, reqBody chatCom
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", appmeta.UserAgent())
 	if c.opts.APIKey != "" {
+		if err := validateAPIKeyEndpoint(endpoint); err != nil {
+			return nil, err
+		}
 		req.Header.Set("Authorization", "Bearer "+c.opts.APIKey)
 	}
 	resp, err := c.opts.HTTPClient.Do(req)
@@ -607,6 +615,9 @@ func (c *Client) Available(ctx context.Context) bool {
 		}
 		req.Header.Set("User-Agent", appmeta.UserAgent())
 		if c.opts.APIKey != "" {
+			if err := validateAPIKeyEndpoint(u.String()); err != nil {
+				continue
+			}
 			req.Header.Set("Authorization", "Bearer "+c.opts.APIKey)
 		}
 		resp, err := c.opts.HTTPClient.Do(req)
@@ -619,6 +630,28 @@ func (c *Client) Available(ctx context.Context) bool {
 		}
 	}
 	return false
+}
+
+func validateAPIKeyEndpoint(endpoint string) error {
+	u, err := url.Parse(endpoint)
+	if err != nil || u.Host == "" || u.User != nil {
+		return fmt.Errorf("API key endpoint must be an absolute URL without credentials")
+	}
+	if u.Scheme == "https" {
+		return nil
+	}
+	if u.Scheme == "http" && isLoopbackHost(u.Hostname()) {
+		return nil
+	}
+	return fmt.Errorf("refusing to send API key over insecure non-loopback endpoint")
+}
+
+func isLoopbackHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // IsFamilyLocal reports whether the model family is a local endpoint.

@@ -42,6 +42,15 @@ type Object struct {
 // ErrNotFound is returned when a logical object does not exist.
 var ErrNotFound = errors.New("storage object not found")
 
+// AtomicStore adds conditional mutation primitives for singleton leases and
+// other coordination records. CompareAndSwap treats a nil old value as
+// "object must not exist"; CompareAndDelete removes only an unchanged object.
+type AtomicStore interface {
+	Store
+	CompareAndSwap(ctx context.Context, path string, old []byte, obj Object) (bool, error)
+	CompareAndDelete(ctx context.Context, path string, old []byte) (bool, error)
+}
+
 // Mem is an in-memory Store for testing.
 type Mem struct {
 	mu   sync.RWMutex
@@ -103,6 +112,49 @@ func (m *Mem) List(ctx context.Context, prefix string) ([]string, error) {
 
 func (m *Mem) Publish(ctx context.Context, obj Object) error {
 	return m.Put(ctx, obj)
+}
+
+func (m *Mem) CompareAndSwap(ctx context.Context, path string, old []byte, obj Object) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	if path != obj.Path {
+		return false, fmt.Errorf("conditional path %q does not match object path %q", path, obj.Path)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	current, exists := m.objs[path]
+	if old == nil {
+		if exists {
+			return false, nil
+		}
+	} else if !exists || !bytes.Equal(current.Data, old) {
+		return false, nil
+	}
+	data := append([]byte(nil), obj.Data...)
+	m.objs[path] = Object{
+		Path:         obj.Path,
+		Data:         data,
+		ContentType:  obj.ContentType,
+		CacheSeconds: obj.CacheSeconds,
+		Immutable:    obj.Immutable,
+		Mutable:      obj.Mutable,
+	}
+	return true, nil
+}
+
+func (m *Mem) CompareAndDelete(ctx context.Context, path string, old []byte) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	current, exists := m.objs[path]
+	if !exists || old == nil || !bytes.Equal(current.Data, old) {
+		return false, nil
+	}
+	delete(m.objs, path)
+	return true, nil
 }
 
 func (m *Mem) Close() error { return nil }
@@ -347,6 +399,80 @@ func (l *Local) Publish(ctx context.Context, obj Object) error {
 	return l.Put(ctx, obj)
 }
 
+func (l *Local) CompareAndSwap(ctx context.Context, path string, old []byte, obj Object) (bool, error) {
+	if err := l.checkContext(ctx); err != nil {
+		return false, err
+	}
+	if path != obj.Path {
+		return false, fmt.Errorf("conditional path %q does not match object path %q", path, obj.Path)
+	}
+	if err := validatePath(path); err != nil {
+		return false, err
+	}
+	p, err := l.safePath(path)
+	if err != nil {
+		return false, err
+	}
+	var swapped bool
+	err = withExclusiveFileLock(filepath.Join(l.root, ".storage-cas.lock"), func() error {
+		current, readErr := os.ReadFile(p)
+		switch {
+		case readErr == nil:
+			if old == nil || !bytes.Equal(current, old) {
+				return nil
+			}
+		case os.IsNotExist(readErr):
+			if old != nil {
+				return nil
+			}
+		default:
+			return readErr
+		}
+		perm := os.FileMode(0640)
+		if isSensitivePath(path) {
+			perm = 0600
+		}
+		if err := atomicWriteFile(p, obj.Data, perm); err != nil {
+			return err
+		}
+		swapped = true
+		return nil
+	})
+	return swapped, err
+}
+
+func (l *Local) CompareAndDelete(ctx context.Context, path string, old []byte) (bool, error) {
+	if err := l.checkContext(ctx); err != nil {
+		return false, err
+	}
+	if err := validatePath(path); err != nil {
+		return false, err
+	}
+	p, err := l.safePath(path)
+	if err != nil {
+		return false, err
+	}
+	var deleted bool
+	err = withExclusiveFileLock(filepath.Join(l.root, ".storage-cas.lock"), func() error {
+		current, readErr := os.ReadFile(p)
+		if os.IsNotExist(readErr) {
+			return nil
+		}
+		if readErr != nil {
+			return readErr
+		}
+		if old == nil || !bytes.Equal(current, old) {
+			return nil
+		}
+		if err := os.Remove(p); err != nil {
+			return err
+		}
+		deleted = true
+		return nil
+	})
+	return deleted, err
+}
+
 func (l *Local) Close() error { return nil }
 
 func isSensitivePath(path string) bool {
@@ -531,6 +657,113 @@ func (s *S3Store) Put(ctx context.Context, obj Object) error {
 		CacheControl: aws.String(cc),
 	})
 	return err
+}
+
+func (s *S3Store) CompareAndSwap(ctx context.Context, path string, old []byte, obj Object) (bool, error) {
+	if path != obj.Path {
+		return false, fmt.Errorf("conditional path %q does not match object path %q", path, obj.Path)
+	}
+	if err := validatePath(path); err != nil {
+		return false, err
+	}
+	ct, cc := objectHeaders(obj)
+	input := &s3.PutObjectInput{
+		Bucket:       aws.String(s.bucket),
+		Key:          aws.String(s.key(path)),
+		Body:         bytes.NewReader(obj.Data),
+		ContentType:  aws.String(ct),
+		CacheControl: aws.String(cc),
+	}
+	if old == nil {
+		input.IfNoneMatch = aws.String("*")
+	} else {
+		current, etag, err := s.getObjectWithETag(ctx, path)
+		if err != nil {
+			if IsNotFound(err) {
+				return false, nil
+			}
+			return false, err
+		}
+		if !bytes.Equal(current, old) {
+			return false, nil
+		}
+		if etag == "" {
+			return false, fmt.Errorf("conditional object %s has no ETag", path)
+		}
+		input.IfMatch = aws.String(etag)
+	}
+	if _, err := s.client.PutObject(ctx, input); err != nil {
+		if isConditionalConflict(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
+}
+
+func (s *S3Store) CompareAndDelete(ctx context.Context, path string, old []byte) (bool, error) {
+	if err := validatePath(path); err != nil {
+		return false, err
+	}
+	if old == nil {
+		return false, nil
+	}
+	current, etag, err := s.getObjectWithETag(ctx, path)
+	if err != nil {
+		if IsNotFound(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	if !bytes.Equal(current, old) {
+		return false, nil
+	}
+	if etag == "" {
+		return false, fmt.Errorf("conditional object %s has no ETag", path)
+	}
+	if _, err := s.client.DeleteObject(ctx, &s3.DeleteObjectInput{
+		Bucket:  aws.String(s.bucket),
+		Key:     aws.String(s.key(path)),
+		IfMatch: aws.String(etag),
+	}); err != nil {
+		if isConditionalConflict(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
+}
+
+func (s *S3Store) getObjectWithETag(ctx context.Context, path string) ([]byte, string, error) {
+	out, err := s.client.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(s.bucket),
+		Key:    aws.String(s.key(path)),
+	})
+	if err != nil {
+		return nil, "", err
+	}
+	defer out.Body.Close()
+	const max = int64(64 << 20)
+	if out.ContentLength != nil && *out.ContentLength > max {
+		return nil, "", fmt.Errorf("object exceeds read limit")
+	}
+	data, err := readAllWithContext(ctx, io.LimitReader(out.Body, max+1), max)
+	if err != nil {
+		return nil, "", err
+	}
+	return data, aws.ToString(out.ETag), nil
+}
+
+func isConditionalConflict(err error) bool {
+	var apiErr smithy.APIError
+	if !errors.As(err, &apiErr) {
+		return false
+	}
+	switch apiErr.ErrorCode() {
+	case "PreconditionFailed", "ConditionalRequestConflict", "412", "409":
+		return true
+	}
+	return false
 }
 
 func objectHeaders(obj Object) (string, string) {

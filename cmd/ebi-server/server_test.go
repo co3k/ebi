@@ -222,6 +222,14 @@ func (s *blockingGetStore) Get(ctx context.Context, path string) ([]byte, error)
 	return s.Store.Get(ctx, path)
 }
 
+func (s *blockingGetStore) CompareAndSwap(ctx context.Context, path string, old []byte, obj storage.Object) (bool, error) {
+	return s.Store.(storage.AtomicStore).CompareAndSwap(ctx, path, old, obj)
+}
+
+func (s *blockingGetStore) CompareAndDelete(ctx context.Context, path string, old []byte) (bool, error) {
+	return s.Store.(storage.AtomicStore).CompareAndDelete(ctx, path, old)
+}
+
 type getErrorStore struct {
 	storage.Store
 	path string
@@ -235,6 +243,14 @@ func (s *getErrorStore) Get(ctx context.Context, path string) ([]byte, error) {
 	return s.Store.Get(ctx, path)
 }
 
+func (s *getErrorStore) CompareAndSwap(ctx context.Context, path string, old []byte, obj storage.Object) (bool, error) {
+	return s.Store.(storage.AtomicStore).CompareAndSwap(ctx, path, old, obj)
+}
+
+func (s *getErrorStore) CompareAndDelete(ctx context.Context, path string, old []byte) (bool, error) {
+	return s.Store.(storage.AtomicStore).CompareAndDelete(ctx, path, old)
+}
+
 type putErrorStore struct {
 	storage.Store
 	path string
@@ -246,6 +262,14 @@ func (s *putErrorStore) Put(ctx context.Context, obj storage.Object) error {
 		return s.err
 	}
 	return s.Store.Put(ctx, obj)
+}
+
+func (s *putErrorStore) CompareAndSwap(ctx context.Context, path string, old []byte, obj storage.Object) (bool, error) {
+	return s.Store.(storage.AtomicStore).CompareAndSwap(ctx, path, old, obj)
+}
+
+func (s *putErrorStore) CompareAndDelete(ctx context.Context, path string, old []byte) (bool, error) {
+	return s.Store.(storage.AtomicStore).CompareAndDelete(ctx, path, old)
 }
 
 func TestFetchFailureDoesNotCreatePendingMismatch(t *testing.T) {
@@ -1216,6 +1240,65 @@ func TestMismatchedWitnessedCheckpointStillFails(t *testing.T) {
 	}
 	if _, err := s.publishCheckpoint(ctx); err == nil || !strings.Contains(err.Error(), "does not match") {
 		t.Fatalf("expected same-size mismatched root error, got %v", err)
+	}
+}
+
+func TestAcquireLeaseIsAtomicAcrossServers(t *testing.T) {
+	ctx := t.Context()
+	cfg := DefaultServerConfig()
+	cfg.DataDir = t.TempDir()
+	cfg.LogKeyFile = filepath.Join(cfg.DataDir, "log-key")
+	cfg.CheckpointState = filepath.Join(cfg.DataDir, "checkpoint-state")
+	first, err := NewServer(ctx, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := NewServer(ctx, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.Shutdown(ctx)
+	defer second.Shutdown(ctx)
+
+	start := make(chan struct{})
+	results := make(chan error, 2)
+	for _, server := range []*Server{first, second} {
+		go func(server *Server) {
+			<-start
+			results <- server.acquireLease(ctx)
+		}(server)
+	}
+	close(start)
+	successes := 0
+	for range 2 {
+		if err := <-results; err == nil {
+			successes++
+		}
+	}
+	if successes != 1 {
+		t.Fatalf("expected exactly one atomic lease winner, got %d", successes)
+	}
+}
+
+func TestCorruptLeaseFailsClosed(t *testing.T) {
+	ctx := t.Context()
+	cfg := DefaultServerConfig()
+	cfg.DataDir = t.TempDir()
+	cfg.LogKeyFile = filepath.Join(cfg.DataDir, "log-key")
+	cfg.CheckpointState = filepath.Join(cfg.DataDir, "checkpoint-state")
+	s, err := NewServer(ctx, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Shutdown(ctx)
+	if err := s.store.Put(ctx, storage.Object{
+		Path: s.leasePath,
+		Data: []byte("{not-json"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.acquireLease(ctx); err == nil || !strings.Contains(err.Error(), "decode lease") {
+		t.Fatalf("corrupt lease was treated as free: %v", err)
 	}
 }
 

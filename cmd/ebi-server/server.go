@@ -374,9 +374,12 @@ func (s *Server) runSequencer() {
 			}
 		case <-ticker.C:
 			s.mu.Lock()
-			current, err := s.publishedCheckpointIsCurrent(context.Background())
-			if err == nil && !current {
-				_, _ = s.reconcileDerivedLocked(context.Background())
+			ctx := context.Background()
+			if err := s.renewLease(ctx); err == nil {
+				current, err := s.publishedCheckpointIsCurrent(ctx)
+				if err == nil && !current {
+					_, _ = s.reconcileDerivedLocked(ctx)
+				}
 			}
 			s.mu.Unlock()
 		}
@@ -1909,18 +1912,32 @@ func (s *Server) acquireLease(ctx context.Context) error {
 	data, err := s.store.Get(ctx, s.leasePath)
 	if err != nil {
 		if storage.IsNotFound(err) {
-			return s.writeLease(ctx, time.Now().Add(leaseDuration))
+			swapped, err := s.compareAndSwapLease(ctx, nil, time.Now().Add(leaseDuration))
+			if err != nil {
+				return err
+			}
+			if !swapped {
+				return fmt.Errorf("lease was acquired concurrently")
+			}
+			return nil
 		}
 		return err
 	}
 	var doc leaseDoc
 	if err := json.Unmarshal(data, &doc); err != nil {
-		return s.writeLease(ctx, time.Now().Add(leaseDuration))
+		return fmt.Errorf("decode lease: %w", err)
 	}
 	if time.Now().Before(doc.Expiry) && doc.Owner != s.ownerID {
 		return fmt.Errorf("lease held by %s until %s", doc.Owner, doc.Expiry.Format(time.RFC3339))
 	}
-	return s.writeLease(ctx, time.Now().Add(leaseDuration))
+	swapped, err := s.compareAndSwapLease(ctx, data, time.Now().Add(leaseDuration))
+	if err != nil {
+		return err
+	}
+	if !swapped {
+		return fmt.Errorf("lease changed during acquisition")
+	}
+	return nil
 }
 
 func (s *Server) renewLease(ctx context.Context) error {
@@ -1935,16 +1952,27 @@ func (s *Server) renewLease(ctx context.Context) error {
 	if current.Owner != s.ownerID {
 		return fmt.Errorf("lease ownership lost to %s", current.Owner)
 	}
-	return s.writeLease(ctx, time.Now().Add(leaseDuration))
-}
-
-func (s *Server) writeLease(ctx context.Context, expiry time.Time) error {
-	doc := leaseDoc{Owner: s.ownerID, Expiry: expiry}
-	b, err := json.Marshal(doc)
+	swapped, err := s.compareAndSwapLease(ctx, data, time.Now().Add(leaseDuration))
 	if err != nil {
 		return err
 	}
-	return s.store.Put(ctx, storage.Object{
+	if !swapped {
+		return fmt.Errorf("lease changed during renewal")
+	}
+	return nil
+}
+
+func (s *Server) compareAndSwapLease(ctx context.Context, old []byte, expiry time.Time) (bool, error) {
+	atomicStore, ok := s.store.(storage.AtomicStore)
+	if !ok {
+		return false, fmt.Errorf("storage backend does not support atomic leases")
+	}
+	doc := leaseDoc{Owner: s.ownerID, Expiry: expiry}
+	b, err := json.Marshal(doc)
+	if err != nil {
+		return false, err
+	}
+	return atomicStore.CompareAndSwap(ctx, s.leasePath, old, storage.Object{
 		Path:        s.leasePath,
 		Data:        b,
 		ContentType: "application/json",
@@ -1966,7 +1994,12 @@ func (s *Server) releaseLease(ctx context.Context) error {
 	if current.Owner != s.ownerID {
 		return nil
 	}
-	return s.store.Delete(ctx, s.leasePath)
+	atomicStore, ok := s.store.(storage.AtomicStore)
+	if !ok {
+		return fmt.Errorf("storage backend does not support atomic leases")
+	}
+	_, err = atomicStore.CompareAndDelete(ctx, s.leasePath, data)
+	return err
 }
 
 func sha256Hex(data []byte) string {

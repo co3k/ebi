@@ -417,6 +417,7 @@ type mockS3Object struct {
 	data         []byte
 	contentType  string
 	cacheControl string
+	etag         string
 }
 
 func newMockS3Client() *mockS3Client {
@@ -440,6 +441,7 @@ func (m *mockS3Client) GetObject(ctx context.Context, params *s3.GetObjectInput,
 	return &s3.GetObjectOutput{
 		Body:          io.NopCloser(bytes.NewReader(obj.data)),
 		ContentLength: aws.Int64(int64(len(obj.data))),
+		ETag:          aws.String(obj.etag),
 	}, nil
 }
 
@@ -451,10 +453,18 @@ func (m *mockS3Client) PutObject(ctx context.Context, params *s3.PutObjectInput,
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	current, exists := m.objects[aws.ToString(params.Key)]
+	if params.IfNoneMatch != nil && aws.ToString(params.IfNoneMatch) == "*" && exists {
+		return nil, &smithy.GenericAPIError{Code: "PreconditionFailed", Message: "exists"}
+	}
+	if params.IfMatch != nil && (!exists || current.etag != aws.ToString(params.IfMatch)) {
+		return nil, &smithy.GenericAPIError{Code: "PreconditionFailed", Message: "etag mismatch"}
+	}
 	m.objects[aws.ToString(params.Key)] = &mockS3Object{
 		data:         data,
 		contentType:  aws.ToString(params.ContentType),
 		cacheControl: aws.ToString(params.CacheControl),
+		etag:         ContentHash(data),
 	}
 	return &s3.PutObjectOutput{}, nil
 }
@@ -463,6 +473,10 @@ func (m *mockS3Client) DeleteObject(ctx context.Context, params *s3.DeleteObject
 	m.record("DeleteObject:" + aws.ToString(params.Key))
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	current, exists := m.objects[aws.ToString(params.Key)]
+	if params.IfMatch != nil && (!exists || current.etag != aws.ToString(params.IfMatch)) {
+		return nil, &smithy.GenericAPIError{Code: "PreconditionFailed", Message: "etag mismatch"}
+	}
 	delete(m.objects, aws.ToString(params.Key))
 	return &s3.DeleteObjectOutput{}, nil
 }
@@ -669,6 +683,89 @@ func TestS3PublishSequence(t *testing.T) {
 	}
 	if !sawPut || !sawCopy || !sawDelete {
 		t.Fatalf("expected publish sequence put/copy/delete, got %v", mock.requests)
+	}
+}
+
+func TestMemCompareAndSwap(t *testing.T) {
+	store := NewMem()
+	ctx := t.Context()
+	obj := Object{Path: "v1/lease", Data: []byte("one")}
+	swapped, err := store.CompareAndSwap(ctx, obj.Path, nil, obj)
+	if err != nil || !swapped {
+		t.Fatalf("initial swap: %v / %v", swapped, err)
+	}
+	if swapped, err := store.CompareAndSwap(ctx, obj.Path, nil, Object{Path: obj.Path, Data: []byte("two")}); err != nil || swapped {
+		t.Fatalf("unexpected create overwrite: %v / %v", swapped, err)
+	}
+	if swapped, err := store.CompareAndSwap(ctx, obj.Path, []byte("wrong"), Object{Path: obj.Path, Data: []byte("two")}); err != nil || swapped {
+		t.Fatalf("unexpected stale overwrite: %v / %v", swapped, err)
+	}
+	if swapped, err := store.CompareAndSwap(ctx, obj.Path, []byte("one"), Object{Path: obj.Path, Data: []byte("two")}); err != nil || !swapped {
+		t.Fatalf("replace: %v / %v", swapped, err)
+	}
+	if deleted, err := store.CompareAndDelete(ctx, obj.Path, []byte("one")); err != nil || deleted {
+		t.Fatalf("unexpected stale delete: %v / %v", deleted, err)
+	}
+	if deleted, err := store.CompareAndDelete(ctx, obj.Path, []byte("two")); err != nil || !deleted {
+		t.Fatalf("delete: %v / %v", deleted, err)
+	}
+}
+
+func TestLocalCompareAndSwapAcrossInstances(t *testing.T) {
+	root := t.TempDir()
+	first, err := NewLocal(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := NewLocal(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := t.Context()
+	results := make(chan bool, 2)
+	for _, store := range []*Local{first, second} {
+		go func(store *Local) {
+			swapped, err := store.CompareAndSwap(ctx, "v1/lease", nil, Object{
+				Path: "v1/lease",
+				Data: []byte(store.root),
+			})
+			if err != nil {
+				t.Errorf("compare and swap: %v", err)
+			}
+			results <- swapped
+		}(store)
+	}
+	winners := 0
+	for range 2 {
+		if <-results {
+			winners++
+		}
+	}
+	if winners != 1 {
+		t.Fatalf("atomic create winners: %d", winners)
+	}
+}
+
+func TestS3CompareAndSwap(t *testing.T) {
+	mock := newMockS3Client()
+	store := newMockS3Store(mock)
+	ctx := t.Context()
+	obj := Object{Path: "v1/lease", Data: []byte("one")}
+	swapped, err := store.CompareAndSwap(ctx, obj.Path, nil, obj)
+	if err != nil || !swapped {
+		t.Fatalf("initial swap: %v / %v", swapped, err)
+	}
+	if swapped, err := store.CompareAndSwap(ctx, obj.Path, nil, Object{Path: obj.Path, Data: []byte("two")}); err != nil || swapped {
+		t.Fatalf("unexpected create overwrite: %v / %v", swapped, err)
+	}
+	if swapped, err := store.CompareAndSwap(ctx, obj.Path, []byte("one"), Object{Path: obj.Path, Data: []byte("two")}); err != nil || !swapped {
+		t.Fatalf("replace: %v / %v", swapped, err)
+	}
+	if deleted, err := store.CompareAndDelete(ctx, obj.Path, []byte("one")); err != nil || deleted {
+		t.Fatalf("unexpected stale delete: %v / %v", deleted, err)
+	}
+	if deleted, err := store.CompareAndDelete(ctx, obj.Path, []byte("two")); err != nil || !deleted {
+		t.Fatalf("delete: %v / %v", deleted, err)
 	}
 }
 

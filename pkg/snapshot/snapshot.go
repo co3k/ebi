@@ -130,6 +130,18 @@ func CreateWithLimits(ctx context.Context, store storage.Store, treeSize int64, 
 	if err != nil {
 		return nil, fmt.Errorf("build prefix shards: %w", err)
 	}
+	leafBlobIDs := make(map[string]struct{}, len(records))
+	referencedArtifactIDs := make(map[string]struct{})
+	for _, record := range records {
+		leafBlobIDs[record.id] = struct{}{}
+		if record.rec == nil || record.rec.Body.Type != schema.SchemaAuditV1 {
+			continue
+		}
+		referencedArtifactIDs[record.rec.Body.Target.SHA256] = struct{}{}
+		if record.rec.Body.Analyzer.Kind == schema.KindLLM {
+			referencedArtifactIDs[record.rec.Body.Analyzer.PromptSHA256] = struct{}{}
+		}
+	}
 
 	generated := map[string]struct{}{
 		datasetPath: {},
@@ -165,6 +177,17 @@ func CreateWithLimits(ctx context.Context, store storage.Store, treeSize int64, 
 		}
 		if _, ok := generated[key]; ok {
 			continue
+		}
+		if strings.HasPrefix(key, blobPrefix) {
+			id := strings.TrimPrefix(key, blobPrefix)
+			if _, leafBlob := leafBlobIDs[id]; !leafBlob {
+				if _, referenced := referencedArtifactIDs[id]; !referenced {
+					// Orphan artifacts may exist transiently after a rejected
+					// submission. Do not distribute archives the verifier
+					// correctly rejects as containing unreferenced content.
+					continue
+				}
+			}
 		}
 		data, err := store.Get(ctx, key)
 		if err != nil {

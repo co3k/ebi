@@ -217,6 +217,44 @@ func TestArchiveDigest(t *testing.T) {
 	}
 }
 
+func TestCreateOmitsUnreferencedContentBlob(t *testing.T) {
+	ctx := context.Background()
+	_, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pub := priv.Public().(ed25519.PublicKey)
+	auditor := auditorFromKey(pub)
+	rec := makeRecord(t, priv, auditor, hash64('a'), schema.SchemaAuditV1, "")
+	store, records, cp, policy := buildTestStore(t, []schema.Record{rec})
+
+	orphanData := []byte("unreferenced artifact")
+	orphanID := storage.ContentHash(orphanData)
+	if err := store.Put(ctx, storage.Object{
+		Path:      storage.BlobPath(orphanID),
+		Data:      orphanData,
+		Immutable: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var buf bytes.Buffer
+	meta, err := Create(ctx, store, int64(len(records)), cp, &buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := Verify(bytes.NewReader(buf.Bytes()), meta, &policy, checkpointPath); err != nil {
+		t.Fatalf("snapshot with filtered orphan did not verify: %v", err)
+	}
+	info, err := readArchive(bytes.NewReader(buf.Bytes()), DefaultLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := info.entries[storage.BlobPath(orphanID)]; ok {
+		t.Fatal("snapshot included an unreferenced content blob")
+	}
+}
+
 func TestLatestJSON(t *testing.T) {
 	meta := &Metadata{
 		SHA256:         strings.Repeat("a", 64),

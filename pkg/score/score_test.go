@@ -4,6 +4,7 @@ import (
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
+	"math/rand"
 	"testing"
 
 	"github.com/co3k/ebi/pkg/schema"
@@ -332,6 +333,80 @@ func TestScoreDeltaCycleTerminates(t *testing.T) {
 	})
 	if report.Positive < 1.49 || report.Positive > 1.51 {
 		t.Fatalf("cycle should inherit B once and stop, got %.3f", report.Positive)
+	}
+}
+
+func TestScoreDeltaIsDeterministicAcrossInputOrder(t *testing.T) {
+	oldHash := hash64("deterministic-old")
+	newHash := hash64("deterministic-new")
+	current := VerifiedRecord{
+		ID:        "current",
+		AuditorID: "current-auditor",
+		Body: schema.RecordBody{
+			Type:       schema.SchemaAuditV1,
+			Target:     schema.Target{SHA256: newHash},
+			Analyzer:   schema.Analyzer{Kind: schema.KindStatic},
+			Verdict:    schema.VerdictOK,
+			PrevSHA256: oldHash,
+		},
+	}
+	prior := []VerifiedRecord{
+		{
+			ID:        "large",
+			AuditorID: "large-auditor",
+			Body: schema.RecordBody{
+				Type:     schema.SchemaAuditV1,
+				Target:   schema.Target{SHA256: oldHash},
+				Analyzer: schema.Analyzer{Kind: schema.KindStatic},
+				Verdict:  schema.VerdictOK,
+			},
+		},
+		{
+			ID:        "small-a",
+			AuditorID: "small-auditor",
+			Body: schema.RecordBody{
+				Type:     schema.SchemaAuditV1,
+				Target:   schema.Target{SHA256: oldHash},
+				Analyzer: schema.Analyzer{Kind: schema.KindHuman},
+				Verdict:  schema.VerdictOK,
+			},
+		},
+		{
+			ID:        "small-b",
+			AuditorID: "small-b-auditor",
+			Body: schema.RecordBody{
+				Type:     schema.SchemaAuditV1,
+				Target:   schema.Target{SHA256: oldHash},
+				Analyzer: schema.Analyzer{Kind: schema.KindLLM, ModelFamily: "qwen"},
+				Verdict:  schema.VerdictOK,
+			},
+		},
+	}
+	trust := map[string]float64{
+		"current-auditor": 1,
+		"large-auditor":   1e16,
+		"small-auditor":   1,
+		"small-b-auditor": 1,
+	}
+	var want float64
+	for i := 0; i < 100; i++ {
+		shuffled := append([]VerifiedRecord(nil), prior...)
+		rand.New(rand.NewSource(int64(i))).Shuffle(len(shuffled), func(i, j int) {
+			shuffled[i], shuffled[j] = shuffled[j], shuffled[i]
+		})
+		got := Compute(Input{
+			TargetHash:   newHash,
+			Records:      []VerifiedRecord{current},
+			PriorRecords: shuffled,
+			Trust:        trust,
+		}).Positive
+		if i == 0 {
+			want = got
+			continue
+		}
+		if got != want {
+			t.Fatalf("delta score changed with input order: got %.17g, want %.17g", got, want)
+		}
 	}
 }
 

@@ -239,6 +239,7 @@ func computeDelta(input Input, byTarget map[string][]VerifiedRecord, depth int, 
 		}
 		selected = append(selected, best)
 	}
+	sort.Slice(selected, func(i, j int) bool { return selected[i].ID < selected[j].ID })
 
 	positiveRaw := 0.0
 	negative := 0.0

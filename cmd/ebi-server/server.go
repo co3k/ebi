@@ -43,6 +43,7 @@ const (
 
 	pendingCheckpointPath   = "v1/pending-checkpoint"
 	witnessedCheckpointPath = "v1/witnessed-checkpoint"
+	checkpointStateDataEnv  = "EBI_CHECKPOINT_STATE_B64"
 )
 
 // ServerConfig configures the ebi server.
@@ -185,6 +186,10 @@ func NewServer(ctx context.Context, cfg ServerConfig) (*Server, error) {
 	if checkpointState == "" {
 		checkpointState = filepath.Join(cfg.DataDir, "checkpoint-state")
 	}
+	if err := restoreCheckpointStateFromEnv(checkpointState); err != nil {
+		_ = store.Close()
+		return nil, fmt.Errorf("restore checkpoint state: %w", err)
+	}
 	if _, err := os.Stat(checkpointState); err == nil {
 		if err := verifyCheckpointState(ctx, store, checkpointState, policy, tree); err != nil {
 			_ = store.Close()
@@ -222,6 +227,61 @@ func NewServer(ctx context.Context, cfg ServerConfig) (*Server, error) {
 		fetcher:         defaultFetcher,
 	}
 	return s, nil
+}
+
+func restoreCheckpointStateFromEnv(path string) error {
+	encoded := os.Getenv(checkpointStateDataEnv)
+	if encoded == "" {
+		return nil
+	}
+	_ = os.Unsetenv(checkpointStateDataEnv)
+	const maxCheckpointStateBytes = 1 << 20
+	if len(encoded) > (maxCheckpointStateBytes*4/3)+8 {
+		return fmt.Errorf("encoded checkpoint state exceeds limit")
+	}
+	data, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		return fmt.Errorf("decode checkpoint state: %w", err)
+	}
+	if len(data) == 0 || len(data) > maxCheckpointStateBytes {
+		return fmt.Errorf("checkpoint state size is invalid")
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0750); err != nil {
+		return err
+	}
+	f, err := os.CreateTemp(filepath.Dir(path), ".checkpoint-state-*")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	cleanup := func() { _ = os.Remove(tmp) }
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		cleanup()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		cleanup()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		cleanup()
+		return err
+	}
+	if err := os.Chmod(tmp, 0600); err != nil {
+		cleanup()
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		cleanup()
+		return err
+	}
+	if dir, err := os.Open(filepath.Dir(path)); err == nil {
+		_ = dir.Sync()
+		_ = dir.Close()
+	}
+	return nil
 }
 
 // SetFetcher overrides the fetcher. It is intended for tests.

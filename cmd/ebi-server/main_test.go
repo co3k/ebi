@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -30,6 +31,21 @@ func TestEnvIntRequiresWholeInteger(t *testing.T) {
 	}
 	if got := envInt("EBI_TEST_INT", 7); got != 7 {
 		t.Fatalf("unset integer did not use default: %d", got)
+	}
+}
+
+func TestExportCheckpointState(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "checkpoint-state")
+	want := []byte("checkpoint-state-data")
+	if err := os.WriteFile(path, want, 0600); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if err := exportCheckpointState(path, &out); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(out.Bytes(), want) {
+		t.Fatalf("exported %q, want %q", out.Bytes(), want)
 	}
 }
 

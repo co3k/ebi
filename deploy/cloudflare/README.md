@@ -90,6 +90,10 @@ curl -fsS https://<submit-domain>/healthz
 
 - The Durable Object name is fixed to `singleton` and `max_instances` is `1`.
 - `sleepAfter = "5m"`; the next POST wakes the container.
+- The signed checkpoint state file is copied into Durable Object storage after
+  submission requests and before idle shutdown, then restored into the
+  container environment before the next cold start. R2 rollback/equivocation
+  checks therefore survive the ephemeral `/tmp` filesystem.
 - The container has outbound Internet access so it can re-fetch submitted public
   HTTPS targets. The Go fetcher performs its own strict redirect/DNS/IP checks.
 - Container local disk is ephemeral. The persistent log key must therefore be

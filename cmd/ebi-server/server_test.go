@@ -1328,6 +1328,33 @@ func TestMirrorImportTakesServerLock(t *testing.T) {
 	}
 }
 
+func TestRestoreCheckpointStateFromEnv(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.toml")
+	data := []byte("trusted checkpoint state")
+	t.Setenv(checkpointStateDataEnv, base64.StdEncoding.EncodeToString(data))
+	if err := restoreCheckpointStateFromEnv(path); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, data) {
+		t.Fatalf("restored checkpoint state mismatch: %q", got)
+	}
+	if os.Getenv(checkpointStateDataEnv) != "" {
+		t.Fatal("checkpoint state environment value was not cleared")
+	}
+}
+
+func TestRestoreCheckpointStateRejectsInvalidBase64(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.toml")
+	t.Setenv(checkpointStateDataEnv, "not-base64!")
+	if err := restoreCheckpointStateFromEnv(path); err == nil {
+		t.Fatal("expected invalid checkpoint state to fail")
+	}
+}
+
 func TestSecretDetectorFindsKnownSecret(t *testing.T) {
 	detector, err := secrets.NewDetector()
 	if err != nil {

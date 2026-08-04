@@ -4,6 +4,7 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -37,9 +38,50 @@ func main() {
 		case "init-policy":
 			initPolicyCmd(os.Args[2:])
 			return
+		case "checkpoint-state":
+			checkpointStateCmd(os.Args[2:])
+			return
 		}
 	}
 	runServer()
+}
+
+func checkpointStateCmd(args []string) {
+	if len(args) == 0 || args[0] != "export" {
+		log.Fatalf("usage: ebi-server checkpoint-state export --path <checkpoint-state>")
+	}
+	fs := flag.NewFlagSet("checkpoint-state export", flag.ExitOnError)
+	path := fs.String("path", envString("EBI_CHECKPOINT_STATE", ""), "checkpoint state file to export")
+	if err := fs.Parse(args[1:]); err != nil {
+		log.Fatalf("checkpoint state: %v", err)
+	}
+	if *path == "" || fs.NArg() != 0 {
+		log.Fatalf("usage: ebi-server checkpoint-state export --path <checkpoint-state>")
+	}
+	if err := exportCheckpointState(*path, os.Stdout); err != nil {
+		log.Fatalf("checkpoint state: %v", err)
+	}
+}
+
+func exportCheckpointState(path string, w io.Writer) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("checkpoint state is not a regular file")
+	}
+	const maxCheckpointStateBytes = int64(1 << 20)
+	if info.Size() > maxCheckpointStateBytes {
+		return fmt.Errorf("checkpoint state exceeds 1 MiB")
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = io.Copy(w, io.LimitReader(f, maxCheckpointStateBytes+1))
+	return err
 }
 
 func runServer() {

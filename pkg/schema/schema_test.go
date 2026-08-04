@@ -395,6 +395,11 @@ func TestRetractionSameAuditor(t *testing.T) {
 	if !RetractionMatchesTarget(retractRec, auditRec) {
 		t.Fatal("retraction should match target")
 	}
+	uppercaseTarget := *auditRec
+	uppercaseTarget.PublicKey = strings.ToUpper(uppercaseTarget.PublicKey)
+	if !RetractionMatchesTarget(retractRec, &uppercaseTarget) {
+		t.Fatal("public key hex case should not change auditor identity")
+	}
 
 	_, otherPriv, err := ed25519.GenerateKey(nil)
 	if err != nil {

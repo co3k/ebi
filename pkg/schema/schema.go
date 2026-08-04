@@ -4,6 +4,7 @@
 package schema
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
@@ -661,7 +662,15 @@ func IsSameAuditor(rec, target *Record) bool {
 	if rec == nil || target == nil {
 		return false
 	}
-	return rec.PublicKey == target.PublicKey
+	recKey, err := hex.DecodeString(rec.PublicKey)
+	if err != nil || len(recKey) != ed25519.PublicKeySize {
+		return false
+	}
+	targetKey, err := hex.DecodeString(target.PublicKey)
+	if err != nil || len(targetKey) != ed25519.PublicKeySize {
+		return false
+	}
+	return bytes.Equal(recKey, targetKey)
 }
 
 // NormalizeTimestamp returns a deterministic RFC3339 timestamp.

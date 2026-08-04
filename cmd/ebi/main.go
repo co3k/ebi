@@ -307,6 +307,7 @@ func executeFlow(rawURL string, stdin io.Reader, f runFlags, scriptArgs []string
 		llmResult, _ = client.Analyze(ctx, string(data))
 		if llmResult != nil && llmResult.Error != "" {
 			fmt.Fprintf(os.Stderr, "llm: skipped (%s)\n", llmResult.Error)
+			llmResult = nil
 		} else if llmResult != nil {
 			redactClaimExcerpts(llmResult.Claims, secretFindings)
 		}
@@ -467,7 +468,7 @@ func executeFlow(rawURL string, stdin io.Reader, f runFlags, scriptArgs []string
 		q, err := contrib.NewQueue()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "queue: %v\n", err)
-			return exitInternal
+			return res.ExitCode
 		}
 		if len(localRecords) == 0 {
 			fmt.Fprintln(os.Stderr, "contribution: pipe-mode contribution requires --source-url with a retrievable HTTPS URL")

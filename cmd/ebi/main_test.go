@@ -350,7 +350,11 @@ func TestMirrorURLRequiresHTTPS(t *testing.T) {
 
 func TestIsNetworkErrorIncludesConnectionFailures(t *testing.T) {
 	for _, err := range []error{
-		&url.Error{Op: "Get", URL: "https://mirror.example", Err: errors.New("connection refused")},
+		&url.Error{
+			Op:  "Get",
+			URL: "https://mirror.example",
+			Err: &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("connection refused")},
+		},
 		&net.DNSError{Name: "missing.invalid", Err: "no such host"},
 	} {
 		if !isNetworkError(err) {
@@ -359,6 +363,13 @@ func TestIsNetworkErrorIncludesConnectionFailures(t *testing.T) {
 	}
 	if isNetworkError(errors.New("invalid checkpoint signature")) {
 		t.Fatal("classified integrity error as a network error")
+	}
+	if isNetworkError(&url.Error{
+		Op:  "Get",
+		URL: "https://mirror.example",
+		Err: errors.New("certificate signed by unknown authority"),
+	}) {
+		t.Fatal("classified a certificate verification failure as a network outage")
 	}
 }
 

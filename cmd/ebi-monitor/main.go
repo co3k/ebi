@@ -278,13 +278,10 @@ func verifyLog(ctx context.Context, store storage.Store, policy tlogx.Policy, pr
 
 	// Enumerate blobs now; validate leaf and content-artifact references after
 	// all record bodies have been authenticated.
-	var blobIDs []string
-	if _, staticHTTP := store.(*httpStore); !staticHTTP {
-		blobIDs, err = listBlobIDs(ctx, store)
-		if err != nil {
-			result.Corrupt = true
-			result.Details = append(result.Details, fmt.Sprintf("list blobs: %v", err))
-		}
+	blobIDs, err := listBlobIDs(ctx, store)
+	if err != nil {
+		result.Corrupt = true
+		result.Details = append(result.Details, fmt.Sprintf("list blobs: %v", err))
 	}
 
 	records, retractions, indices, leafDetails := verifyLeaves(ctx, store, policy, tree, leaves)
@@ -422,24 +419,6 @@ func fetchCheckpoint(ctx context.Context, store storage.Store) ([]byte, error) {
 }
 
 func listLeaves(ctx context.Context, store storage.Store, treeSize int64) (map[int64]string, []string, error) {
-	if _, ok := store.(*httpStore); ok {
-		leaves := make(map[int64]string, treeSize)
-		var details []string
-		for i := int64(0); i < treeSize; i++ {
-			key := fmt.Sprintf("v1/leaf/%d", i)
-			idx, id, err := parseLeafIndexPathAndContent(ctx, store, key)
-			if err != nil {
-				details = append(details, fmt.Sprintf("leaf index %d: %v", i, err))
-				continue
-			}
-			if idx != i {
-				details = append(details, fmt.Sprintf("leaf path %d resolved to index %d", i, idx))
-				continue
-			}
-			leaves[i] = id
-		}
-		return leaves, details, nil
-	}
 	keys, err := store.List(ctx, "v1/leaf")
 	if err != nil {
 		return nil, nil, err
@@ -661,24 +640,6 @@ func applyRetractions(records, retractions []schema.Record, indices []int64) (in
 
 func verifyShards(ctx context.Context, store storage.Store, records, retractions []schema.Record, indices []int64) (map[string][]byte, []string, error) {
 	_, auditRecords, auditIndices := applyRetractions(records, retractions, indices)
-	if _, ok := store.(*httpStore); ok {
-		want, err := prefixdb.BuildShardsWithIndex(auditRecords, auditIndices)
-		if err != nil {
-			return nil, nil, err
-		}
-		got := make(map[string][]byte, len(want))
-		for prefix, expected := range want {
-			data, err := store.Get(ctx, storage.PrefixPath(prefix))
-			if err != nil {
-				return nil, nil, fmt.Errorf("fetch prefix %s: %w", prefix, err)
-			}
-			if !bytes.Equal(data, expected) {
-				return nil, nil, fmt.Errorf("prefix %s shard mismatch", prefix)
-			}
-			got[prefix] = data
-		}
-		return got, nil, nil
-	}
 	keys, err := store.List(ctx, "v1/prefix")
 	if err != nil {
 		return nil, nil, err

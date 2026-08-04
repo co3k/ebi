@@ -1202,6 +1202,78 @@ func TestHTTPReferencedBlobMissing(t *testing.T) {
 	}
 }
 
+func TestHTTPOrphanBlobIsDetected(t *testing.T) {
+	signer, vkey := testKey(t)
+	dir := t.TempDir()
+	store, err := storage.NewLocal(filepath.Join(dir, "store"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	makeLog(t, store, signer, 1)
+	orphan := []byte("http orphan")
+	orphanID := storage.ContentHash(orphan)
+	if err := store.Put(t.Context(), storage.Object{
+		Path:      storage.BlobPath(orphanID),
+		Data:      orphan,
+		Immutable: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := httptest.NewServer(http.FileServer(http.Dir(filepath.Join(dir, "store"))))
+	defer srv.Close()
+	res, err := runWithConfig(t.Context(), &config{
+		baseURL:    srv.URL,
+		policyPath: writePolicy(t, dir, vkey),
+		oneShot:    true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res == nil || !res.Corrupt {
+		t.Fatalf("expected HTTP orphan detection: %+v", res)
+	}
+	found := false
+	for _, detail := range res.Details {
+		if strings.Contains(detail, orphanID) {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("orphan detail missing: %v", res.Details)
+	}
+}
+
+func TestHTTPUnexpectedShardIsDetected(t *testing.T) {
+	signer, vkey := testKey(t)
+	dir := t.TempDir()
+	store, err := storage.NewLocal(filepath.Join(dir, "store"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	makeLog(t, store, signer, 1)
+	if err := store.Put(t.Context(), storage.Object{
+		Path: storage.PrefixPath("fffff"),
+		Data: []byte(`{"prefix":"fffff","entries":[]}`),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := httptest.NewServer(http.FileServer(http.Dir(filepath.Join(dir, "store"))))
+	defer srv.Close()
+	res, err := runWithConfig(t.Context(), &config{
+		baseURL:    srv.URL,
+		policyPath: writePolicy(t, dir, vkey),
+		oneShot:    true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res == nil || !res.Corrupt || !strings.Contains(res.Error, "shard") {
+		t.Fatalf("expected unexpected HTTP shard detection: %+v", res)
+	}
+}
+
 func TestConfigValidation(t *testing.T) {
 	orig := os.Args
 	defer func() { os.Args = orig }()

@@ -129,6 +129,8 @@ type Server struct {
 	wg              sync.WaitGroup
 	witnessRetrying atomic.Bool
 	mu              sync.RWMutex
+	lifecycleMu     sync.Mutex
+	shuttingDown    bool
 	rateMu          sync.Mutex
 	rateWindows     map[string]submissionWindow
 	httpServer      *http.Server
@@ -359,7 +361,13 @@ func (s *Server) StartSequencer(ctx context.Context) error {
 	}
 	s.queue = make(chan job)
 	s.done = make(chan struct{})
+	s.lifecycleMu.Lock()
+	if s.shuttingDown {
+		s.lifecycleMu.Unlock()
+		return fmt.Errorf("server is shutting down")
+	}
 	s.wg.Add(1)
+	s.lifecycleMu.Unlock()
 	go s.runSequencer()
 	s.kickWitnessRetry()
 	return nil
@@ -417,6 +425,8 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	if s.httpServer != nil {
 		_ = s.httpServer.Shutdown(ctx)
 	}
+	s.lifecycleMu.Lock()
+	s.shuttingDown = true
 	if s.done != nil {
 		select {
 		case <-s.done:
@@ -424,6 +434,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 			close(s.done)
 		}
 	}
+	s.lifecycleMu.Unlock()
 	s.wg.Wait()
 	if s.store != nil {
 		_ = s.releaseLease(ctx)
@@ -754,6 +765,11 @@ func (s *Server) collectWitnessCosignatures(ctx context.Context, checkpoint []by
 
 func (s *Server) kickWitnessRetry() {
 	if s.policy.RequiredWitnesses <= 0 || len(s.witnessURLs) == 0 || s.done == nil {
+		return
+	}
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+	if s.shuttingDown {
 		return
 	}
 	if !s.witnessRetrying.CompareAndSwap(false, true) {

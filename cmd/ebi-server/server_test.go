@@ -1380,6 +1380,72 @@ func TestStaleWitnessedCheckpointRemainsPending(t *testing.T) {
 	}
 }
 
+func TestTombstoneRetryReusesPendingPlan(t *testing.T) {
+	ctx := t.Context()
+	cfg := DefaultServerConfig()
+	cfg.DataDir = t.TempDir()
+	cfg.LogKeyFile = filepath.Join(cfg.DataDir, "log-key")
+	cfg.CheckpointState = filepath.Join(cfg.DataDir, "checkpoint-state")
+	cfg.WitnessKeys = []string{"witness.invalid+00000000+AQ=="}
+	cfg.RequiredWitnesses = 1
+	s, err := NewServer(ctx, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Shutdown(ctx)
+	if err := s.StartSequencer(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	fetcher := newTestFetcher()
+	s.SetFetcher(fetcher)
+	key := newAuditorKey(t)
+	targetURL := "https://example.com/tombstone-retry.sh"
+	content := []byte("echo retry\n")
+	fetcher.set(targetURL, content)
+	audit := makeAuditRecord(t, key, targetURL, content, nil)
+	auditID, err := schema.RecordID(audit.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Seed the audit directly so only the moderation checkpoint is pending.
+	s.mu.Lock()
+	if res := s.sequenceRecordLocked(ctx, audit, nil, func(ctx context.Context) error {
+		return s.putContentBlob(ctx, audit.Body.Target.SHA256, content, "text/x-shellscript")
+	}); res.err != nil {
+		s.mu.Unlock()
+		t.Fatal(res.err)
+	}
+	s.mu.Unlock()
+
+	_, firstErr := s.Tombstone(ctx, auditID)
+	if firstErr == nil || !strings.Contains(firstErr.Error(), "awaiting witness quorum") {
+		t.Fatalf("expected pending tombstone, got %v", firstErr)
+	}
+	sizeAfterFirst := s.Tree().Size()
+	planPath := pendingTombstonePrefix + auditID + ".json"
+	firstPlan, err := s.Store().Get(ctx, planPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, secondErr := s.Tombstone(ctx, auditID)
+	if secondErr == nil || !strings.Contains(secondErr.Error(), "awaiting witness quorum") {
+		t.Fatalf("expected pending retry, got %v", secondErr)
+	}
+	if s.Tree().Size() != sizeAfterFirst {
+		t.Fatalf("tombstone retry appended a duplicate moderation leaf: %d -> %d", sizeAfterFirst, s.Tree().Size())
+	}
+	secondPlan, err := s.Store().Get(ctx, planPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(firstPlan, secondPlan) {
+		t.Fatal("tombstone retry regenerated the pending moderation plan")
+	}
+}
+
 func TestMismatchedWitnessedCheckpointStillFails(t *testing.T) {
 	witnessSigner, witnessKey := testC2SPWitnessKey(t, "witness.example/mismatch")
 	ctx := t.Context()

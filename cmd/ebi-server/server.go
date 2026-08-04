@@ -45,6 +45,7 @@ const (
 	pendingCheckpointPath   = "v1/pending-checkpoint"
 	witnessedCheckpointPath = "v1/witnessed-checkpoint"
 	checkpointStateDataEnv  = "EBI_CHECKPOINT_STATE_B64"
+	pendingTombstonePrefix  = "v1/pending-tombstone/"
 )
 
 // ServerConfig configures the ebi server.
@@ -1366,6 +1367,7 @@ func (s *Server) Tombstone(ctx context.Context, recordID string) (jobResult, err
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	planPath := pendingTombstonePrefix + recordID + ".json"
 	if !schema.IsHexHash(recordID) {
 		err := fmt.Errorf("record ID must be a lowercase SHA-256 hex string")
 		return jobResult{err: err}, err
@@ -1377,6 +1379,7 @@ func (s *Server) Tombstone(ctx context.Context, recordID string) (jobResult, err
 	if _, isTombstone, err := tlogx.DecodeTombstoneBlob(original, recordID); err != nil {
 		return jobResult{err: err}, err
 	} else if isTombstone {
+		_ = s.store.Delete(ctx, planPath)
 		err := fmt.Errorf("record is already tombstoned")
 		return jobResult{err: err}, err
 	}
@@ -1409,30 +1412,11 @@ func (s *Server) Tombstone(ctx context.Context, recordID string) (jobResult, err
 		err := fmt.Errorf("record has a live retraction; tombstone the retraction first")
 		return jobResult{err: err}, err
 	}
-	tombstone := map[string]interface{}{
-		"tombstone":  true,
-		"record_id":  recordID,
-		"reason":     "operator request",
-		"message":    "Deletion never substitutes for rotation; rotate exposed secrets immediately.",
-		"deleted_at": schema.NewTimestamp(),
-	}
-	tombBytes, err := json.Marshal(tombstone)
+	plan, err := s.loadOrCreateTombstonePlan(ctx, planPath, recordID)
 	if err != nil {
 		return jobResult{err: err}, err
 	}
-	body := schema.RecordBody{
-		Type:            schema.SchemaModerationV1,
-		CreatedAt:       schema.UnixNow(),
-		Auditor:         s.key.auditorID,
-		BlobSHA256:      recordID,
-		TombstoneSHA256: sha256Hex(tombBytes),
-		Reason:          "tombstone",
-	}
-	rec, _, err := s.signServerRecord(body)
-	if err != nil {
-		return jobResult{err: err}, err
-	}
-	res := s.sequenceRecordLocked(ctx, rec, nil, nil)
+	res := s.sequenceRecordLocked(ctx, plan.Record, nil, nil)
 	if res.err != nil {
 		return res, res.err
 	}
@@ -1450,7 +1434,7 @@ func (s *Server) Tombstone(ctx context.Context, recordID string) (jobResult, err
 	// record, but can never delete the body without an authenticated binding.
 	if err := s.store.Put(ctx, storage.Object{
 		Path:         "v1/blob/" + recordID,
-		Data:         tombBytes,
+		Data:         plan.Tombstone,
 		ContentType:  "application/json",
 		CacheSeconds: 60,
 		Mutable:      true,
@@ -1464,7 +1448,92 @@ func (s *Server) Tombstone(ctx context.Context, recordID string) (jobResult, err
 	if err := s.cleanupUnreferencedContentBlobsLocked(ctx); err != nil {
 		return jobResult{recordID: res.recordID, err: err}, err
 	}
+	if err := s.store.Delete(ctx, planPath); err != nil && !storage.IsNotFound(err) {
+		return jobResult{recordID: res.recordID, err: err}, err
+	}
 	return res, nil
+}
+
+type tombstonePlan struct {
+	Tombstone json.RawMessage `json:"tombstone"`
+	Record    schema.Record   `json:"record"`
+}
+
+func (s *Server) loadOrCreateTombstonePlan(ctx context.Context, path, recordID string) (*tombstonePlan, error) {
+	data, err := s.store.Get(ctx, path)
+	if err == nil {
+		var plan tombstonePlan
+		if err := decodeStrictJSON(data, &plan); err != nil {
+			return nil, fmt.Errorf("decode pending tombstone: %w", err)
+		}
+		if err := validateTombstonePlan(&plan, recordID); err != nil {
+			return nil, err
+		}
+		return &plan, nil
+	}
+	if !storage.IsNotFound(err) {
+		return nil, err
+	}
+
+	tombstone := map[string]interface{}{
+		"tombstone":  true,
+		"record_id":  recordID,
+		"reason":     "operator request",
+		"message":    "Deletion never substitutes for rotation; rotate exposed secrets immediately.",
+		"deleted_at": schema.NewTimestamp(),
+	}
+	tombBytes, err := json.Marshal(tombstone)
+	if err != nil {
+		return nil, err
+	}
+	body := schema.RecordBody{
+		Type:            schema.SchemaModerationV1,
+		CreatedAt:       schema.UnixNow(),
+		Auditor:         s.key.auditorID,
+		BlobSHA256:      recordID,
+		TombstoneSHA256: sha256Hex(tombBytes),
+		Reason:          "tombstone",
+	}
+	rec, _, err := s.signServerRecord(body)
+	if err != nil {
+		return nil, err
+	}
+	plan := &tombstonePlan{Tombstone: tombBytes, Record: rec}
+	encoded, err := json.Marshal(plan)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.store.Put(ctx, storage.Object{
+		Path:        path,
+		Data:        encoded,
+		ContentType: "application/json",
+	}); err != nil {
+		return nil, err
+	}
+	return plan, nil
+}
+
+func validateTombstonePlan(plan *tombstonePlan, recordID string) error {
+	if plan == nil {
+		return fmt.Errorf("pending tombstone plan is nil")
+	}
+	if _, ok, err := tlogx.DecodeTombstoneBlob(plan.Tombstone, recordID); err != nil || !ok {
+		if err == nil {
+			err = fmt.Errorf("marker is not a tombstone")
+		}
+		return fmt.Errorf("pending tombstone marker: %w", err)
+	}
+	body, _, err := schema.Verify(&plan.Record)
+	if err != nil {
+		return fmt.Errorf("pending tombstone record: %w", err)
+	}
+	if body.Type != schema.SchemaModerationV1 ||
+		body.Reason != "tombstone" ||
+		body.BlobSHA256 != recordID ||
+		body.TombstoneSHA256 != sha256Hex(plan.Tombstone) {
+		return fmt.Errorf("pending tombstone binding does not match target")
+	}
+	return nil
 }
 
 func (s *Server) cleanupUnreferencedContentBlobs(ctx context.Context) error {

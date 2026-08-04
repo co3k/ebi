@@ -307,13 +307,37 @@ func verifyLog(ctx context.Context, store storage.Store, policy tlogx.Policy, pr
 		result.Error = "invalid retraction records"
 		return result, nil, tlog.Tree{}, nil
 	}
-	if len(blobIDs) > 0 {
-		referenced := referencedBlobIDs(records)
-		for _, id := range leaves {
-			referenced[id] = true
+	recordIDs := make(map[string]bool, len(leaves))
+	for _, id := range leaves {
+		recordIDs[id] = true
+	}
+	contentRefs := referencedBlobIDs(records)
+
+	// Verify every content blob referenced by authenticated audit records
+	// (target hash and LLM prompt hash). This runs even in HTTP mode, where
+	// listings are unavailable but known references can be fetched directly.
+	for id := range contentRefs {
+		if !schema.IsHexHash(id) {
+			result.Details = append(result.Details, fmt.Sprintf("invalid referenced content blob id %s", id))
+			result.Corrupt = true
+			continue
 		}
+		data, err := store.Get(ctx, storage.BlobPath(id))
+		if err != nil {
+			result.Details = append(result.Details, fmt.Sprintf("missing referenced content blob %s: %v", id, err))
+			result.Corrupt = true
+			continue
+		}
+		if storage.ContentHash(data) != id {
+			result.Details = append(result.Details, fmt.Sprintf("referenced content blob hash mismatch %s", id))
+			result.Corrupt = true
+		}
+	}
+
+	// Enumerate unreferenced listed blobs (local/S3 only).
+	if len(blobIDs) > 0 {
 		for _, id := range blobIDs {
-			if referenced[id] {
+			if recordIDs[id] || contentRefs[id] {
 				continue
 			}
 			data, err := store.Get(ctx, storage.BlobPath(id))

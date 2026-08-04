@@ -45,21 +45,33 @@ func hex64(seed string) string {
 	return hex.EncodeToString(h[:])
 }
 
-func makeRecord(t *testing.T, seed string) (schema.Record, tlogx.Leaf, ed25519.PrivateKey) {
+func makeRecord(t *testing.T, store storage.Store, seed string) (schema.Record, tlogx.Leaf, ed25519.PrivateKey) {
 	t.Helper()
 	_, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
 	pub := hex.EncodeToString(priv.Public().(ed25519.PublicKey))
+	targetData := []byte("target content for " + seed)
+	targetSHA := storage.ContentHash(targetData)
+	if store != nil {
+		if err := store.Put(context.Background(), storage.Object{
+			Path:        storage.BlobPath(targetSHA),
+			Data:        targetData,
+			ContentType: "application/octet-stream",
+			Immutable:   true,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
 	body := schema.RecordBody{
 		Type:      schema.SchemaAuditV1,
 		CreatedAt: time.Now().Unix(),
 		Auditor:   schema.AuditorHash(pub),
 		Target: schema.Target{
 			URL:    "https://example.com/" + seed,
-			SHA256: hex64(seed),
-			Size:   1,
+			SHA256: targetSHA,
+			Size:   int64(len(targetData)),
 		},
 		Analyzer: schema.Analyzer{Kind: schema.KindHuman},
 		Verdict:  schema.VerdictOK,
@@ -85,7 +97,7 @@ func makeLog(t *testing.T, store storage.Store, signer note.Signer, count int) (
 	tr := tlogx.NewTree()
 	var records []schema.Record
 	for i := 0; i < count; i++ {
-		rec, leaf, _ := makeRecord(t, fmt.Sprintf("r%d", i))
+		rec, leaf, _ := makeRecord(t, store, fmt.Sprintf("r%d", i))
 		idx, err := tr.AppendLeaf(leaf)
 		if err != nil {
 			t.Fatal(err)
@@ -135,6 +147,70 @@ func writePolicy(t *testing.T, dir, vkey string) string {
 		t.Fatal(err)
 	}
 	return path
+}
+
+func makeLLMRecord(t *testing.T, store storage.Store, seed string, targetData, promptData []byte) (schema.Record, tlogx.Leaf, ed25519.PrivateKey) {
+	t.Helper()
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pub := hex.EncodeToString(priv.Public().(ed25519.PublicKey))
+	targetSHA := storage.ContentHash(targetData)
+	promptSHA := storage.ContentHash(promptData)
+	if store != nil {
+		if err := store.Put(context.Background(), storage.Object{
+			Path:        storage.BlobPath(targetSHA),
+			Data:        targetData,
+			ContentType: "application/octet-stream",
+			Immutable:   true,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.Put(context.Background(), storage.Object{
+			Path:        storage.BlobPath(promptSHA),
+			Data:        promptData,
+			ContentType: "application/octet-stream",
+			Immutable:   true,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	body := schema.RecordBody{
+		Type:      schema.SchemaAuditV1,
+		CreatedAt: time.Now().Unix(),
+		Auditor:   schema.AuditorHash(pub),
+		Target: schema.Target{
+			URL:    "https://example.com/" + seed,
+			SHA256: targetSHA,
+			Size:   int64(len(targetData)),
+		},
+		Analyzer: schema.Analyzer{
+			Kind:         schema.KindLLM,
+			Model:        "model",
+			ModelFamily:  "family",
+			Quantization: "q4",
+			Backend:      "ollama",
+			PromptSHA256: promptSHA,
+			Runs:         1,
+			Agreement:    1.0,
+		},
+		Verdict: schema.VerdictOK,
+		Claims: []schema.Claim{{
+			Category:   schema.KnownCategories[0],
+			Line:       1,
+			LineSHA256: hex64(seed),
+		}},
+	}
+	rec, err := schema.Sign(body, priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaf, err := tlogx.RecordToLeaf(*rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return *rec, leaf, priv
 }
 
 func makeRetraction(t *testing.T, target schema.Record, priv ed25519.PrivateKey) schema.Record {
@@ -234,19 +310,40 @@ func TestCorruptBlob(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	makeLog(t, store, signer, 3)
+	tr, records := makeLog(t, store, signer, 3)
+	_ = records
+	recordIDs := map[string]bool{}
+	for i := int64(0); i < tr.Size(); i++ {
+		data, err := store.Get(context.Background(), fmt.Sprintf("v1/leaf/%d", i))
+		if err != nil {
+			t.Fatal(err)
+		}
+		idx, _, err := tlogx.DecodeLeafIndex(fmt.Sprintf("v1/leaf/%d", i), data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		recordIDs[idx.RecordID] = true
+	}
 	keys, err := store.List(context.Background(), "v1/blob")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(keys) == 0 {
-		t.Fatal("no blobs")
+	var recordBlob string
+	for _, key := range keys {
+		id := strings.TrimPrefix(key, "v1/blob/")
+		if recordIDs[id] {
+			recordBlob = key
+			break
+		}
 	}
-	orig, err := store.Get(context.Background(), keys[0])
+	if recordBlob == "" {
+		t.Fatal("no record blob found")
+	}
+	orig, err := store.Get(context.Background(), recordBlob)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.Put(context.Background(), storage.Object{Path: keys[0], Data: append([]byte("corrupt"), orig...), ContentType: "application/json", Immutable: true}); err != nil {
+	if err := store.Put(context.Background(), storage.Object{Path: recordBlob, Data: append([]byte("corrupt"), orig...), ContentType: "application/json", Immutable: true}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -367,7 +464,7 @@ func TestMonitorAcceptsAuthenticatedTombstone(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	audit, _, operatorPriv := makeRecord(t, "tombstoned-audit")
+	audit, _, operatorPriv := makeRecord(t, store, "tombstoned-audit")
 	auditID, err := schema.RecordID(audit.Body)
 	if err != nil {
 		t.Fatal(err)
@@ -413,6 +510,11 @@ func TestMonitorAcceptsAuthenticatedTombstone(t *testing.T) {
 		Path: "v1/blob/" + auditID,
 		Data: tombstone,
 	}); err != nil {
+		t.Fatal(err)
+	}
+	// The tombstoned audit's target content is no longer referenced by an
+	// authenticated audit record.
+	if err := store.Delete(context.Background(), storage.BlobPath(audit.Body.Target.SHA256)); err != nil {
 		t.Fatal(err)
 	}
 	if err := tlogx.WriteTiles(tr, store, tlogx.DefaultTileHeight); err != nil {
@@ -713,7 +815,7 @@ func TestRetraction(t *testing.T) {
 		t.Fatal(err)
 	}
 	tr := tlogx.NewTree()
-	rec, leaf, priv := makeRecord(t, "target")
+	rec, leaf, priv := makeRecord(t, store, "target")
 	idx, err := tr.AppendLeaf(leaf)
 	if err != nil {
 		t.Fatal(err)
@@ -791,7 +893,7 @@ func TestOrphanBlob(t *testing.T) {
 		t.Fatal(err)
 	}
 	makeLog(t, store, signer, 2)
-	rec, _, _ := makeRecord(t, "orphan")
+	rec, _, _ := makeRecord(t, nil, "orphan")
 	data, err := json.Marshal(rec)
 	if err != nil {
 		t.Fatal(err)
@@ -824,6 +926,279 @@ func TestOrphanBlob(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("expected orphan blob detail, got %v", res.Details)
+	}
+}
+
+func TestReferencedBlobMissingTarget(t *testing.T) {
+	signer, vkey := testKey(t)
+	dir := t.TempDir()
+	store, err := storage.NewLocal(filepath.Join(dir, "store"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tr := tlogx.NewTree()
+	rec, leaf, _ := makeRecord(t, store, "missing-target")
+	idx, err := tr.AppendLeaf(leaf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tlogx.WriteRecord(store, idx, rec); err != nil {
+		t.Fatal(err)
+	}
+	// Remove the target content blob so the referenced hash cannot be verified.
+	if err := store.Delete(context.Background(), storage.BlobPath(rec.Body.Target.SHA256)); err != nil {
+		t.Fatal(err)
+	}
+	if err := tlogx.WriteTiles(tr, store, tlogx.DefaultTileHeight); err != nil {
+		t.Fatal(err)
+	}
+	if err := tlogx.WriteCheckpoint(tr.TlogTree(), "test", signer, store); err != nil {
+		t.Fatal(err)
+	}
+	writeShards(t, store, []schema.Record{rec})
+
+	cfg := &config{
+		storage:    filepath.Join(dir, "store"),
+		policyPath: writePolicy(t, dir, vkey),
+		oneShot:    true,
+	}
+	res, err := runWithConfig(t.Context(), cfg)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if res == nil || !res.Corrupt {
+		t.Fatalf("expected corrupt: %+v", res)
+	}
+	found := false
+	for _, d := range res.Details {
+		if strings.Contains(d, "missing referenced content blob") && strings.Contains(d, rec.Body.Target.SHA256) {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected missing referenced content blob detail, got %v", res.Details)
+	}
+}
+
+func TestReferencedBlobTamperedTarget(t *testing.T) {
+	signer, vkey := testKey(t)
+	dir := t.TempDir()
+	store, err := storage.NewLocal(filepath.Join(dir, "store"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tr := tlogx.NewTree()
+	rec, leaf, _ := makeRecord(t, store, "tampered-target")
+	idx, err := tr.AppendLeaf(leaf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tlogx.WriteRecord(store, idx, rec); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Put(context.Background(), storage.Object{
+		Path:        storage.BlobPath(rec.Body.Target.SHA256),
+		Data:        []byte("tampered"),
+		ContentType: "application/octet-stream",
+		Immutable:   true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tlogx.WriteTiles(tr, store, tlogx.DefaultTileHeight); err != nil {
+		t.Fatal(err)
+	}
+	if err := tlogx.WriteCheckpoint(tr.TlogTree(), "test", signer, store); err != nil {
+		t.Fatal(err)
+	}
+	writeShards(t, store, []schema.Record{rec})
+
+	cfg := &config{
+		storage:    filepath.Join(dir, "store"),
+		policyPath: writePolicy(t, dir, vkey),
+		oneShot:    true,
+	}
+	res, err := runWithConfig(t.Context(), cfg)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if res == nil || !res.Corrupt {
+		t.Fatalf("expected corrupt: %+v", res)
+	}
+	found := false
+	for _, d := range res.Details {
+		if strings.Contains(d, "referenced content blob hash mismatch") && strings.Contains(d, rec.Body.Target.SHA256) {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected referenced content blob hash mismatch detail, got %v", res.Details)
+	}
+}
+
+func TestReferencedBlobMissingPrompt(t *testing.T) {
+	signer, vkey := testKey(t)
+	dir := t.TempDir()
+	store, err := storage.NewLocal(filepath.Join(dir, "store"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tr := tlogx.NewTree()
+	targetData := []byte("target for missing prompt")
+	promptData := []byte("prompt for missing prompt")
+	rec, leaf, _ := makeLLMRecord(t, store, "missing-prompt", targetData, promptData)
+	idx, err := tr.AppendLeaf(leaf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tlogx.WriteRecord(store, idx, rec); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Delete(context.Background(), storage.BlobPath(rec.Body.Analyzer.PromptSHA256)); err != nil {
+		t.Fatal(err)
+	}
+	if err := tlogx.WriteTiles(tr, store, tlogx.DefaultTileHeight); err != nil {
+		t.Fatal(err)
+	}
+	if err := tlogx.WriteCheckpoint(tr.TlogTree(), "test", signer, store); err != nil {
+		t.Fatal(err)
+	}
+	writeShards(t, store, []schema.Record{rec})
+
+	cfg := &config{
+		storage:    filepath.Join(dir, "store"),
+		policyPath: writePolicy(t, dir, vkey),
+		oneShot:    true,
+	}
+	res, err := runWithConfig(t.Context(), cfg)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if res == nil || !res.Corrupt {
+		t.Fatalf("expected corrupt: %+v", res)
+	}
+	found := false
+	for _, d := range res.Details {
+		if strings.Contains(d, "missing referenced content blob") && strings.Contains(d, rec.Body.Analyzer.PromptSHA256) {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected missing referenced content blob detail, got %v", res.Details)
+	}
+}
+
+func TestReferencedBlobTamperedPrompt(t *testing.T) {
+	signer, vkey := testKey(t)
+	dir := t.TempDir()
+	store, err := storage.NewLocal(filepath.Join(dir, "store"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tr := tlogx.NewTree()
+	targetData := []byte("target for tampered prompt")
+	promptData := []byte("prompt for tampered prompt")
+	rec, leaf, _ := makeLLMRecord(t, store, "tampered-prompt", targetData, promptData)
+	idx, err := tr.AppendLeaf(leaf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tlogx.WriteRecord(store, idx, rec); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Put(context.Background(), storage.Object{
+		Path:        storage.BlobPath(rec.Body.Analyzer.PromptSHA256),
+		Data:        []byte("tampered"),
+		ContentType: "application/octet-stream",
+		Immutable:   true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tlogx.WriteTiles(tr, store, tlogx.DefaultTileHeight); err != nil {
+		t.Fatal(err)
+	}
+	if err := tlogx.WriteCheckpoint(tr.TlogTree(), "test", signer, store); err != nil {
+		t.Fatal(err)
+	}
+	writeShards(t, store, []schema.Record{rec})
+
+	cfg := &config{
+		storage:    filepath.Join(dir, "store"),
+		policyPath: writePolicy(t, dir, vkey),
+		oneShot:    true,
+	}
+	res, err := runWithConfig(t.Context(), cfg)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if res == nil || !res.Corrupt {
+		t.Fatalf("expected corrupt: %+v", res)
+	}
+	found := false
+	for _, d := range res.Details {
+		if strings.Contains(d, "referenced content blob hash mismatch") && strings.Contains(d, rec.Body.Analyzer.PromptSHA256) {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected referenced content blob hash mismatch detail, got %v", res.Details)
+	}
+}
+
+func TestHTTPReferencedBlobMissing(t *testing.T) {
+	signer, vkey := testKey(t)
+	dir := t.TempDir()
+	store, err := storage.NewLocal(filepath.Join(dir, "store"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tr := tlogx.NewTree()
+	targetData := []byte("target for http missing")
+	promptData := []byte("prompt for http missing")
+	rec, leaf, _ := makeLLMRecord(t, store, "http-missing", targetData, promptData)
+	idx, err := tr.AppendLeaf(leaf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tlogx.WriteRecord(store, idx, rec); err != nil {
+		t.Fatal(err)
+	}
+	if err := tlogx.WriteTiles(tr, store, tlogx.DefaultTileHeight); err != nil {
+		t.Fatal(err)
+	}
+	if err := tlogx.WriteCheckpoint(tr.TlogTree(), "test", signer, store); err != nil {
+		t.Fatal(err)
+	}
+	writeShards(t, store, []schema.Record{rec})
+	// Remove the prompt blob after the log is published so the HTTP monitor
+	// must detect the missing referenced content blob without a directory listing.
+	if err := store.Delete(context.Background(), storage.BlobPath(rec.Body.Analyzer.PromptSHA256)); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := httptest.NewServer(http.FileServer(http.Dir(filepath.Join(dir, "store"))))
+	defer srv.Close()
+
+	cfg := &config{
+		baseURL:        srv.URL,
+		policyPath:     writePolicy(t, dir, vkey),
+		checkpointPath: filepath.Join(dir, "state.toml"),
+		oneShot:        true,
+	}
+	res, err := runWithConfig(t.Context(), cfg)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if res == nil || !res.Corrupt {
+		t.Fatalf("expected corrupt: %+v", res)
+	}
+	found := false
+	for _, d := range res.Details {
+		if strings.Contains(d, "missing referenced content blob") && strings.Contains(d, rec.Body.Analyzer.PromptSHA256) {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected missing referenced content blob detail, got %v", res.Details)
 	}
 }
 

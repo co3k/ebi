@@ -551,6 +551,13 @@ func (s *Server) publishCheckpoint(ctx context.Context) (bool, error) {
 			return false, fmt.Errorf("verify witnessed checkpoint: %w", err)
 		}
 		if got != tree {
+			if got.N < tree.N {
+				// A collector commonly stages the last witnessed checkpoint
+				// while the log has already advanced. Keep the new tree pending;
+				// it is not corruption and the retry loop will publish once a
+				// matching cosigned checkpoint arrives.
+				return false, nil
+			}
 			return false, fmt.Errorf("witnessed checkpoint does not match current tree")
 		}
 		signed = candidate
@@ -1558,6 +1565,8 @@ func (s *Server) PublishSnapshot(ctx context.Context, publicBaseURL string, mirr
 func (s *Server) ImportSnapshot(ctx context.Context, r io.Reader, mode string) error {
 	switch mode {
 	case "mirror":
+		s.mu.Lock()
+		defer s.mu.Unlock()
 		_, err := snapshot.ImportMirrorWithPolicy(r, s.store, s.policy)
 		return err
 	case "fork":

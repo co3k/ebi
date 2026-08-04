@@ -9,11 +9,29 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
 	"time"
 
 	"github.com/co3k/ebi/pkg/schema"
 )
+
+func TestEnvIntRequiresWholeInteger(t *testing.T) {
+	t.Setenv("EBI_TEST_INT", "2x")
+	if got := envInt("EBI_TEST_INT", 7); got != 7 {
+		t.Fatalf("partial integer was accepted: %d", got)
+	}
+	t.Setenv("EBI_TEST_INT", "2")
+	if got := envInt("EBI_TEST_INT", 7); got != 2 {
+		t.Fatalf("valid integer was rejected: %d", got)
+	}
+	if err := os.Unsetenv("EBI_TEST_INT"); err != nil {
+		t.Fatal(err)
+	}
+	if got := envInt("EBI_TEST_INT", 7); got != 7 {
+		t.Fatalf("unset integer did not use default: %d", got)
+	}
+}
 
 func TestHealth(t *testing.T) {
 	s, cleanup := newTestServer(t)

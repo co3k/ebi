@@ -4,13 +4,13 @@ package main
 import (
 	"context"
 	"flag"
-	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -300,8 +300,8 @@ func envInt(name string, def int) int {
 	if v == "" {
 		return def
 	}
-	var n int
-	if _, err := fmt.Sscanf(v, "%d", &n); err != nil {
+	n, err := strconv.Atoi(v)
+	if err != nil {
 		return def
 	}
 	return n

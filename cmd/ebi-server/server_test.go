@@ -222,6 +222,32 @@ func (s *blockingGetStore) Get(ctx context.Context, path string) ([]byte, error)
 	return s.Store.Get(ctx, path)
 }
 
+type getErrorStore struct {
+	storage.Store
+	path string
+	err  error
+}
+
+func (s *getErrorStore) Get(ctx context.Context, path string) ([]byte, error) {
+	if path == s.path {
+		return nil, s.err
+	}
+	return s.Store.Get(ctx, path)
+}
+
+type putErrorStore struct {
+	storage.Store
+	path string
+	err  error
+}
+
+func (s *putErrorStore) Put(ctx context.Context, obj storage.Object) error {
+	if obj.Path == s.path {
+		return s.err
+	}
+	return s.Store.Put(ctx, obj)
+}
+
 func TestFetchFailureDoesNotCreatePendingMismatch(t *testing.T) {
 	s, cleanup := newTestServer(t)
 	defer cleanup()
@@ -1005,6 +1031,217 @@ func TestInvalidLLMPromptHashLeavesNoOrphanTargetBlob(t *testing.T) {
 	}
 	if s.Tree().Size() != 0 {
 		t.Fatalf("rejected LLM audit appended a leaf: %d", s.Tree().Size())
+	}
+}
+
+func TestAuditArtifactPreparationFailureCleansTargetBlob(t *testing.T) {
+	s, cleanup := newTestServer(t)
+	defer cleanup()
+	fetcher := newTestFetcher()
+	s.SetFetcher(fetcher)
+
+	key := newAuditorKey(t)
+	url := "https://example.com/prompt-store-failure.sh"
+	content := []byte("sudo true\n")
+	fetcher.set(url, content)
+	prompt := llm.BuildPrompt(string(content))
+	promptHash := llm.PromptHash(prompt)
+	body := schema.RecordBody{
+		Type:      schema.SchemaAuditV1,
+		CreatedAt: time.Now().UTC().Unix(),
+		Auditor:   key.id,
+		Target: schema.Target{
+			URL:    url,
+			SHA256: storage.ContentHash(content),
+			Size:   int64(len(content)),
+		},
+		Analyzer: schema.Analyzer{
+			Kind:         schema.KindLLM,
+			Model:        "qwen2.5-coder",
+			ModelFamily:  "qwen",
+			Quantization: "q4_k_m",
+			Backend:      "ollama",
+			PromptSHA256: promptHash,
+			Runs:         5,
+			Agreement:    1,
+		},
+		Verdict: schema.VerdictDanger,
+		Claims: []schema.Claim{{
+			Category:   "priv.sudo",
+			Line:       1,
+			LineSHA256: schema.LineHash("sudo true"),
+		}},
+	}
+	rec, err := schema.Sign(body, key.priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.store = &putErrorStore{
+		Store: s.store,
+		path:  storage.BlobPath(promptHash),
+		err:   fmt.Errorf("injected prompt write failure"),
+	}
+
+	payload, _ := marshalSubmit(rec)
+	w := postJSON(t, s.Handler(), "/v1/records", payload)
+	mustStatus(t, w, http.StatusInternalServerError)
+	if _, err := s.Store().Get(t.Context(), storage.BlobPath(body.Target.SHA256)); !storage.IsNotFound(err) {
+		t.Fatalf("failed artifact preparation left target blob: %v", err)
+	}
+	if s.Tree().Size() != 0 {
+		t.Fatalf("failed artifact preparation appended a leaf: %d", s.Tree().Size())
+	}
+}
+
+func TestPendingLookupErrorFailsClosed(t *testing.T) {
+	s, cleanup := newTestServer(t)
+	defer cleanup()
+	fetcher := newTestFetcher()
+	s.SetFetcher(fetcher)
+
+	key := newAuditorKey(t)
+	url := "https://example.com/pending-error.sh"
+	content := []byte("echo hello\n")
+	fetcher.set(url, content)
+	rec := makeAuditRecord(t, key, url, content, nil)
+	id, err := schema.RecordID(rec.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.store = &getErrorStore{
+		Store: s.store,
+		path:  "v1/pending/" + id,
+		err:   fmt.Errorf("injected pending read failure"),
+	}
+
+	payload, _ := marshalSubmit(rec)
+	w := postJSON(t, s.Handler(), "/v1/records", payload)
+	mustStatus(t, w, http.StatusServiceUnavailable)
+	if s.Tree().Size() != 0 {
+		t.Fatalf("pending lookup failure appended a leaf: %d", s.Tree().Size())
+	}
+}
+
+func TestStaleWitnessedCheckpointRemainsPending(t *testing.T) {
+	witnessSigner, witnessKey := testC2SPWitnessKey(t, "witness.example/stale")
+	ctx := t.Context()
+	cfg := DefaultServerConfig()
+	cfg.DataDir = t.TempDir()
+	cfg.LogKeyFile = filepath.Join(cfg.DataDir, "log-key")
+	cfg.CheckpointState = filepath.Join(cfg.DataDir, "checkpoint-state")
+	cfg.WitnessKeys = []string{witnessKey}
+	cfg.RequiredWitnesses = 1
+	s, err := NewServer(ctx, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Shutdown(ctx)
+
+	oldTree := s.tree.TlogTree()
+	oldCandidate, err := note.Sign(
+		&note.Note{Text: string(tlogx.FormatCheckpoint(oldTree, s.origin))},
+		s.key.signer,
+		witnessSigner,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.store.Put(ctx, storage.Object{
+		Path: witnessedCheckpointPath,
+		Data: oldCandidate,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	key := newAuditorKey(t)
+	rec := makeAuditRecord(t, key, "https://example.com/new.sh", []byte("echo new\n"), nil)
+	leaf, err := tlogx.RecordToLeaf(rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.tree.AppendLeaf(leaf); err != nil {
+		t.Fatal(err)
+	}
+	published, err := s.publishCheckpoint(ctx)
+	if err != nil {
+		t.Fatalf("stale witnessed checkpoint must be pending, not corrupt: %v", err)
+	}
+	if published {
+		t.Fatal("stale witnessed checkpoint unexpectedly published the current tree")
+	}
+	if _, err := s.store.Get(ctx, storage.CheckpointPath()); !storage.IsNotFound(err) {
+		t.Fatalf("stale candidate published a checkpoint: %v", err)
+	}
+}
+
+func TestMismatchedWitnessedCheckpointStillFails(t *testing.T) {
+	witnessSigner, witnessKey := testC2SPWitnessKey(t, "witness.example/mismatch")
+	ctx := t.Context()
+	cfg := DefaultServerConfig()
+	cfg.DataDir = t.TempDir()
+	cfg.LogKeyFile = filepath.Join(cfg.DataDir, "log-key")
+	cfg.CheckpointState = filepath.Join(cfg.DataDir, "checkpoint-state")
+	cfg.WitnessKeys = []string{witnessKey}
+	cfg.RequiredWitnesses = 1
+	s, err := NewServer(ctx, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Shutdown(ctx)
+
+	key := newAuditorKey(t)
+	rec := makeAuditRecord(t, key, "https://example.com/current.sh", []byte("echo current\n"), nil)
+	leaf, err := tlogx.RecordToLeaf(rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.tree.AppendLeaf(leaf); err != nil {
+		t.Fatal(err)
+	}
+	badTree := s.tree.TlogTree()
+	badTree.Hash[0] ^= 0xff
+	candidate, err := note.Sign(
+		&note.Note{Text: string(tlogx.FormatCheckpoint(badTree, s.origin))},
+		s.key.signer,
+		witnessSigner,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.store.Put(ctx, storage.Object{
+		Path: witnessedCheckpointPath,
+		Data: candidate,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.publishCheckpoint(ctx); err == nil || !strings.Contains(err.Error(), "does not match") {
+		t.Fatalf("expected same-size mismatched root error, got %v", err)
+	}
+}
+
+func TestMirrorImportTakesServerLock(t *testing.T) {
+	s, cleanup := newTestServer(t)
+	defer cleanup()
+
+	s.mu.Lock()
+	done := make(chan error, 1)
+	go func() {
+		done <- s.ImportSnapshot(t.Context(), bytes.NewReader(nil), "mirror")
+	}()
+	select {
+	case err := <-done:
+		s.mu.Unlock()
+		t.Fatalf("mirror import returned without the server lock: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	s.mu.Unlock()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("invalid archive unexpectedly imported")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("mirror import did not resume after server lock release")
 	}
 }
 

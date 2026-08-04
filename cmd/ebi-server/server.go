@@ -21,6 +21,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/co3k/ebi/pkg/fetch"
@@ -109,6 +110,7 @@ type Server struct {
 	policy          tlogx.Policy
 	origin          string
 	tree            *tlogx.Tree
+	treeSize        atomic.Int64
 	checkpointState string
 	ownerID         string
 	leasePath       string
@@ -120,6 +122,7 @@ type Server struct {
 	queue           chan job
 	done            chan struct{}
 	wg              sync.WaitGroup
+	witnessRetrying atomic.Bool
 	mu              sync.RWMutex
 	httpServer      *http.Server
 	listener        net.Listener
@@ -226,6 +229,7 @@ func NewServer(ctx context.Context, cfg ServerConfig) (*Server, error) {
 		witnessURLs:     append([]string(nil), cfg.WitnessURLs...),
 		fetcher:         defaultFetcher,
 	}
+	s.treeSize.Store(tree.Size())
 	return s, nil
 }
 
@@ -345,6 +349,7 @@ func (s *Server) StartSequencer(ctx context.Context) error {
 	s.done = make(chan struct{})
 	s.wg.Add(1)
 	go s.runSequencer()
+	s.kickWitnessRetry()
 	return nil
 }
 
@@ -359,7 +364,7 @@ func (s *Server) StartHTTP(ctx context.Context) error {
 		Addr:         ln.Addr().String(),
 		Handler:      s.Handler(),
 		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 30 * time.Second,
+		WriteTimeout: s.requestTimeout + 5*time.Second,
 	}
 	go func() {
 		if err := s.httpServer.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -442,6 +447,7 @@ func (s *Server) runSequencer() {
 				}
 			}
 			s.mu.Unlock()
+			s.kickWitnessRetry()
 		}
 	}
 }
@@ -458,6 +464,9 @@ func (s *Server) processJob(j job) {
 		}
 	}
 	j.resp <- res
+	if res.pending {
+		s.kickWitnessRetry()
+	}
 }
 
 func (s *Server) sequenceRecord(
@@ -541,6 +550,7 @@ func (s *Server) sequenceRecordLocked(
 	if _, err := s.tree.AppendLeaf(leaf); err != nil {
 		return cleanupPrepared(jobResult{recordID: id, err: fmt.Errorf("append leaf: %w", err)})
 	}
+	s.treeSize.Store(s.tree.Size())
 	published, err := s.reconcileDerivedLocked(ctx)
 	if err != nil {
 		return cleanupPrepared(jobResult{recordID: id, err: err})
@@ -593,21 +603,12 @@ func (s *Server) publishCheckpoint(ctx context.Context) (bool, error) {
 		}); err != nil {
 			return false, fmt.Errorf("stage pending checkpoint: %w", err)
 		}
-		var candidate []byte
-		if len(s.witnessURLs) > 0 {
-			// A single unavailable or misconfigured witness must not make an
-			// already-appended record look lost. The candidate remains pending
-			// and the periodic retry loop tries again.
-			candidate, _ = s.collectWitnessCosignatures(ctx, signed)
-		}
-		if len(candidate) == 0 {
-			candidate, err = s.store.Get(ctx, witnessedCheckpointPath)
-			if err != nil {
-				if storage.IsNotFound(err) {
-					return false, nil
-				}
-				return false, fmt.Errorf("read witnessed checkpoint: %w", err)
+		candidate, err := s.store.Get(ctx, witnessedCheckpointPath)
+		if err != nil {
+			if storage.IsNotFound(err) {
+				return false, nil
 			}
+			return false, fmt.Errorf("read witnessed checkpoint: %w", err)
 		}
 		got, _, err := tlogx.VerifyCheckpoint(candidate, s.policy)
 		if err != nil {
@@ -651,7 +652,7 @@ func (s *Server) publishCheckpoint(ctx context.Context) (bool, error) {
 	return true, nil
 }
 
-func (s *Server) collectWitnessCosignatures(ctx context.Context, checkpoint []byte) ([]byte, error) {
+func (s *Server) collectWitnessCosignatures(ctx context.Context, checkpoint []byte, tree *tlogx.Tree) ([]byte, error) {
 	candidate := append([]byte(nil), checkpoint...)
 	client := &http.Client{Timeout: s.requestTimeout}
 	var failures []string
@@ -677,14 +678,14 @@ func (s *Server) collectWitnessCosignatures(ctx context.Context, checkpoint []by
 				break
 			}
 			if resp.StatusCode == http.StatusConflict {
-				if attempt > 0 || currentSize < 0 || currentSize > s.tree.Size() {
+				if attempt > 0 || currentSize < 0 || currentSize > tree.Size() {
 					failures = append(failures, fmt.Sprintf("%s: invalid witness size %d", baseURL, currentSize))
 					break
 				}
 				oldSize = currentSize
 				proof = nil
-				if oldSize > 0 && oldSize < s.tree.Size() {
-					proof, err = s.tree.TreeProof(oldSize)
+				if oldSize > 0 && oldSize < tree.Size() {
+					proof, err = tree.TreeProof(oldSize)
 					if err != nil {
 						failures = append(failures, fmt.Sprintf("%s: consistency proof: %v", baseURL, err))
 						break
@@ -713,6 +714,72 @@ func (s *Server) collectWitnessCosignatures(ctx context.Context, checkpoint []by
 		return nil, fmt.Errorf("witness quorum unavailable: %s", strings.Join(failures, "; "))
 	}
 	return nil, nil
+}
+
+func (s *Server) kickWitnessRetry() {
+	if s.policy.RequiredWitnesses <= 0 || len(s.witnessURLs) == 0 || s.done == nil {
+		return
+	}
+	if !s.witnessRetrying.CompareAndSwap(false, true) {
+		return
+	}
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		defer s.witnessRetrying.Store(false)
+		s.retryWitnessCheckpoint()
+	}()
+}
+
+func (s *Server) retryWitnessCheckpoint() {
+	ctx, cancel := context.WithTimeout(context.Background(), s.requestTimeout)
+	defer cancel()
+	go func() {
+		select {
+		case <-s.done:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+
+	s.mu.Lock()
+	tree := s.tree.Clone()
+	signed, err := tlogx.CheckpointBytes(tree.TlogTree(), s.origin, s.key.signer)
+	if err == nil {
+		err = s.store.Put(ctx, storage.Object{
+			Path:         pendingCheckpointPath,
+			Data:         signed,
+			ContentType:  "text/plain; charset=utf-8",
+			CacheSeconds: 60,
+			Mutable:      true,
+		})
+	}
+	s.mu.Unlock()
+	if err != nil {
+		return
+	}
+
+	candidate, err := s.collectWitnessCosignatures(ctx, signed, tree)
+	if err != nil || len(candidate) == 0 {
+		return
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	current := s.tree.TlogTree()
+	if current != tree.TlogTree() {
+		return
+	}
+	if err := s.store.Put(ctx, storage.Object{
+		Path:         witnessedCheckpointPath,
+		Data:         candidate,
+		ContentType:  "text/plain; charset=utf-8",
+		CacheSeconds: 60,
+		Mutable:      true,
+	}); err != nil {
+		return
+	}
+	_, _ = s.publishCheckpoint(ctx)
 }
 
 func (s *Server) publishedCheckpointIsCurrent(ctx context.Context) (bool, error) {
@@ -1453,9 +1520,7 @@ func (s *Server) hasMatchingRetractionLocked(ctx context.Context, target *schema
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
-	s.mu.RLock()
-	size := s.tree.Size()
-	s.mu.RUnlock()
+	size := s.treeSize.Load()
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"status": "ok",
 		"origin": s.origin,
@@ -1656,6 +1721,7 @@ func (s *Server) ImportSnapshot(ctx context.Context, r io.Reader, mode string) e
 			return err
 		}
 		s.tree = tree
+		s.treeSize.Store(tree.Size())
 		if _, err := s.reconcileDerivedLocked(ctx); err != nil {
 			return fmt.Errorf("publish forked log: %w", err)
 		}

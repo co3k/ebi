@@ -29,6 +29,7 @@ import (
 	"github.com/co3k/ebi/pkg/storage"
 	"github.com/co3k/ebi/pkg/tlogx"
 	"golang.org/x/mod/sumdb/note"
+	"golang.org/x/mod/sumdb/tlog"
 )
 
 func newTestServer(t *testing.T) (*Server, func()) {
@@ -135,7 +136,15 @@ func TestAutomaticC2SPWitnessCollection(t *testing.T) {
 	}
 	defer s.Shutdown(ctx)
 
-	checkpoint, _, err := tlogx.ReadCheckpoint(s.Store(), s.Policy())
+	deadline := time.Now().Add(2 * time.Second)
+	var checkpoint tlog.Tree
+	for {
+		checkpoint, _, err = tlogx.ReadCheckpoint(s.Store(), s.Policy())
+		if err == nil || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 	if err != nil {
 		t.Fatalf("published checkpoint did not meet witness quorum: %v", err)
 	}
@@ -144,6 +153,101 @@ func TestAutomaticC2SPWitnessCollection(t *testing.T) {
 	}
 	if _, err := s.Store().Get(ctx, pendingCheckpointPath); !storage.IsNotFound(err) {
 		t.Fatalf("pending checkpoint was not cleaned: %v", err)
+	}
+}
+
+func TestSlowWitnessDoesNotBlockHealthOrSubmission(t *testing.T) {
+	witnessSigner, witnessKey := testC2SPWitnessKey(t, "witness.example/slow")
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	witness := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		once.Do(func() { close(started) })
+		select {
+		case <-r.Context().Done():
+			return
+		case <-release:
+		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			return
+		}
+		split := bytes.Index(body, []byte("\n\n"))
+		if split < 0 {
+			http.Error(w, "malformed", http.StatusBadRequest)
+			return
+		}
+		checkpoint := body[split+2:]
+		textEnd := bytes.Index(checkpoint, []byte("\n\n— "))
+		if textEnd < 0 {
+			http.Error(w, "malformed", http.StatusBadRequest)
+			return
+		}
+		cosigned, err := note.Sign(&note.Note{Text: string(checkpoint[:textEnd+1])}, witnessSigner)
+		if err != nil {
+			http.Error(w, "sign", http.StatusInternalServerError)
+			return
+		}
+		_, _ = w.Write(cosigned[bytes.Index(cosigned, []byte("\n\n"))+2:])
+	}))
+	defer witness.Close()
+
+	ctx := t.Context()
+	cfg := DefaultServerConfig()
+	cfg.Port = "0"
+	cfg.DataDir = t.TempDir()
+	cfg.LogKeyFile = filepath.Join(cfg.DataDir, "log-key")
+	cfg.CheckpointState = filepath.Join(cfg.DataDir, "checkpoint-state")
+	cfg.WitnessKeys = []string{witnessKey}
+	cfg.WitnessURLs = []string{witness.URL}
+	cfg.RequiredWitnesses = 1
+	cfg.RequestTimeout = time.Second
+	s, err := NewServer(ctx, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		close(release)
+		_ = s.Shutdown(ctx)
+	}()
+
+	start := time.Now()
+	if err := s.StartSequencer(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if elapsed := time.Since(start); elapsed > 200*time.Millisecond {
+		t.Fatalf("sequencer startup waited for witness: %v", elapsed)
+	}
+	<-started
+	if err := s.StartHTTP(ctx); err != nil {
+		t.Fatal(err)
+	}
+	client := &http.Client{Timeout: 200 * time.Millisecond}
+	resp, err := client.Get("http://" + s.Addr() + "/healthz")
+	if err != nil {
+		t.Fatalf("health blocked by witness: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("health status %d", resp.StatusCode)
+	}
+
+	fetcher := newTestFetcher()
+	s.SetFetcher(fetcher)
+	key := newAuditorKey(t)
+	targetURL := "https://example.com/pending-witness.sh"
+	content := []byte("echo pending\n")
+	fetcher.set(targetURL, content)
+	rec := makeAuditRecord(t, key, targetURL, content, nil)
+	payload, _ := marshalSubmit(rec)
+	requestStart := time.Now()
+	w := postJSON(t, s.Handler(), "/v1/records", payload)
+	mustStatus(t, w, http.StatusAccepted)
+	if elapsed := time.Since(requestStart); elapsed > 200*time.Millisecond {
+		t.Fatalf("submission waited for witness: %v", elapsed)
+	}
+	if body := decodeMap(t, w.Body.Bytes()); body["pending"] != true {
+		t.Fatalf("expected pending witness response: %v", body)
 	}
 }
 

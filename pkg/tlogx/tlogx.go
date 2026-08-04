@@ -153,6 +153,21 @@ func (t *Tree) Leaves() []tlog.Hash {
 	return out
 }
 
+// Clone returns an independent copy of the in-memory tree suitable for
+// generating proofs without holding the caller's mutation lock.
+func (t *Tree) Clone() *Tree {
+	if t == nil {
+		return nil
+	}
+	out := &Tree{
+		leaves: append([]tlog.Hash(nil), t.leaves...),
+		stored: append([]tlog.Hash(nil), t.stored...),
+		size:   t.size,
+		root:   t.root,
+	}
+	return out
+}
+
 // Append adds a new leaf hash to the tree and recomputes the root.
 // The root is always recomputed from the stored hash slice so an inconsistent
 // root cannot be produced.

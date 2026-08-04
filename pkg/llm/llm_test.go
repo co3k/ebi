@@ -70,6 +70,17 @@ func TestMergeResults(t *testing.T) {
 	}
 }
 
+func TestMultiRunDefaultsToSamplingTemperature(t *testing.T) {
+	client := NewClient(Options{Runs: 5})
+	if client.opts.Temperature <= 0 {
+		t.Fatalf("multi-run client remained deterministic: %f", client.opts.Temperature)
+	}
+	single := NewClient(Options{Runs: 1})
+	if single.opts.Temperature != 0 {
+		t.Fatalf("single-run default temperature changed: %f", single.opts.Temperature)
+	}
+}
+
 func TestClientAnalyzeMock(t *testing.T) {
 	wantContent := `{"verdict":"ok","claims":[]}`
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

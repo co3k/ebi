@@ -73,8 +73,9 @@ func NewClient(opts Options) *Client {
 		opts.Quantization = "unknown"
 	}
 	if opts.Temperature == 0 && opts.Runs > 1 {
-		// Deterministic self-consistency.
-		opts.Temperature = 0.0
+		// Multi-run agreement needs modest sampling diversity; a zero
+		// temperature would repeat the same deterministic completion.
+		opts.Temperature = 0.2
 	}
 	return &Client{opts: opts}
 }

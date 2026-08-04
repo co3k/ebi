@@ -34,7 +34,12 @@ cd ..
 Terraform creates the R2 bucket, attaches `r2_public_domain` as its production
 custom domain, makes extensionless `/v1/*` objects cache-eligible while
 respecting their origin `Cache-Control`, and installs an IP-based WAF rate limit
-for `POST /v1/records`.
+for `POST /v1/records` and `POST /v1/reports` on `submit_domain`.
+
+Before deployment, replace `submit.example.com` in `wrangler.jsonc` with the
+same `submit_domain` value used by Terraform. The production Worker is
+custom-domain-only (`workers_dev = false`) so the rate-limit zone rules cannot
+be bypassed through a `workers.dev` hostname.
 
 ## Set required secrets
 
@@ -75,10 +80,10 @@ string bindings.
 npx wrangler deploy
 ```
 
-Then check:
+Then check the configured custom domain:
 
 ```bash
-curl -fsS https://<worker-host>/healthz
+curl -fsS https://<submit-domain>/healthz
 ```
 
 ## Operational notes

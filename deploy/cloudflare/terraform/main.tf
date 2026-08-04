@@ -29,25 +29,24 @@ resource "cloudflare_r2_custom_domain" "ebi" {
 }
 
 resource "cloudflare_ruleset" "ebi_rate_limit" {
-  account_id  = var.account_id
   zone_id     = var.zone_id
   name        = "ebi rate limit"
-  description = "Rate-limit POST /v1/records per IP"
+  description = "Rate-limit ebi submission endpoints per IP"
   kind        = "zone"
   phase       = "http_ratelimit"
 
   rules = [{
     ref         = "ebi_records_ip_rate_limit"
     action      = var.rate_limit_action
-    expression  = "http.request.method eq \"POST\" and http.request.uri.path eq \"/v1/records\""
-    description = "Rate limit POST /v1/records per IP"
+    expression  = "http.host eq \"${var.submit_domain}\" and http.request.method eq \"POST\" and (http.request.uri.path eq \"/v1/records\" or http.request.uri.path eq \"/v1/reports\")"
+    description = "Rate limit ebi submission endpoints per IP"
     enabled     = true
     ratelimit = {
       characteristics     = ["cf.colo.id", "ip.src"]
       period              = 10
       requests_per_period = var.rate_limit_threshold
       mitigation_timeout  = 60
-      counting_expression = "http.request.method eq \"POST\" and http.request.uri.path eq \"/v1/records\""
+      counting_expression = "http.host eq \"${var.submit_domain}\" and http.request.method eq \"POST\" and (http.request.uri.path eq \"/v1/records\" or http.request.uri.path eq \"/v1/reports\")"
     }
   }]
 }

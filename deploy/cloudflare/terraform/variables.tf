@@ -19,8 +19,13 @@ variable "r2_public_domain" {
   type        = string
 }
 
+variable "submit_domain" {
+  description = "Custom domain routed to the ebi submit Worker (for example, submit.example.com)"
+  type        = string
+}
+
 variable "rate_limit_threshold" {
-  description = "Requests per 10s allowed per IP to POST /v1/records"
+  description = "Requests per 10s allowed per IP to ebi submission endpoints"
   type        = number
   default     = 10
 }

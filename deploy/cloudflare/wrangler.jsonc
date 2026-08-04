@@ -3,6 +3,13 @@
   "name": "ebi-server",
   "main": "worker.ts",
   "compatibility_date": "2026-08-03",
+  "workers_dev": false,
+  "routes": [
+    {
+      "pattern": "submit.example.com",
+      "custom_domain": true
+    }
+  ],
   "containers": [
     {
       "class_name": "EbiServer",

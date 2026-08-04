@@ -255,6 +255,70 @@ func TestCreateOmitsUnreferencedContentBlob(t *testing.T) {
 	}
 }
 
+func TestReadArchiveRejectsCompressedInputBeforeUnboundedDrain(t *testing.T) {
+	var archive bytes.Buffer
+	zw, err := zstd.NewWriter(&archive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tw := tar.NewWriter(zw)
+	if err := tw.WriteHeader(&tar.Header{
+		Name:     "small",
+		Mode:     0600,
+		Size:     1,
+		Typeflag: tar.TypeReg,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tw.Write([]byte("x")); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	limits := Limits{
+		TotalBytes: int64(archive.Len() - 1),
+		FileBytes:  1024,
+		FileCount:  10,
+	}
+	if _, err := readArchive(bytes.NewReader(archive.Bytes()), limits); err == nil ||
+		!strings.Contains(err.Error(), "compressed archive exceeds") {
+		t.Fatalf("expected compressed-size rejection, got %v", err)
+	}
+}
+
+func TestVerifyWithCheckpointStateRejectsRollback(t *testing.T) {
+	ctx := context.Background()
+	_, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pub := priv.Public().(ed25519.PublicKey)
+	auditor := auditorFromKey(pub)
+	rec := makeRecord(t, priv, auditor, hash64('d'), schema.SchemaAuditV1, "")
+	store, records, cp, policy := buildTestStore(t, []schema.Record{rec})
+
+	var buf bytes.Buffer
+	if _, err := Create(ctx, store, int64(len(records)), cp, &buf); err != nil {
+		t.Fatal(err)
+	}
+	prior := tlog.Tree{N: int64(len(records) + 1)}
+	if _, _, err := VerifyWithCheckpointState(
+		bytes.NewReader(buf.Bytes()),
+		nil,
+		&policy,
+		checkpointPath,
+		prior,
+		true,
+	); err == nil || !strings.Contains(err.Error(), "rollback") {
+		t.Fatalf("expected rollback rejection, got %v", err)
+	}
+}
+
 func TestLatestJSON(t *testing.T) {
 	meta := &Metadata{
 		SHA256:         strings.Repeat("a", 64),

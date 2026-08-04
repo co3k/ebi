@@ -120,17 +120,22 @@ func loadPolicy(cfg config.Config) (tlogx.Policy, error) {
 }
 
 func loadCheckpointState(cfg config.Config) (tlog.Tree, []byte, error) {
+	tree, signed, _, err := loadCheckpointStateWithPresence(cfg)
+	return tree, signed, err
+}
+
+func loadCheckpointStateWithPresence(cfg config.Config) (tlog.Tree, []byte, bool, error) {
 	if cfg.CheckpointPath == "" {
-		return tlog.Tree{}, nil, nil
+		return tlog.Tree{}, nil, false, nil
 	}
 	tree, signed, err := tlogx.LoadCheckpointState(cfg.CheckpointPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return tlog.Tree{}, nil, nil
+			return tlog.Tree{}, nil, false, nil
 		}
-		return tlog.Tree{}, nil, err
+		return tlog.Tree{}, nil, false, err
 	}
-	return tree, signed, nil
+	return tree, signed, true, nil
 }
 
 func mirrorURL(cfg config.Config) string {

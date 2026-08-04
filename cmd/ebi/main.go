@@ -25,6 +25,7 @@ import (
 	"github.com/co3k/ebi/pkg/secrets"
 	"github.com/co3k/ebi/pkg/snapshot"
 	"github.com/co3k/ebi/pkg/storage"
+	"github.com/co3k/ebi/pkg/tlogx"
 	"github.com/co3k/ebi/pkg/tui"
 )
 
@@ -957,9 +958,28 @@ func doVerify(args []string) int {
 			return exitVerifyFail
 		}
 		defer f.Close()
-		if err := snapshot.Verify(f, nil, &policy, storage.CheckpointPath()); err != nil {
+		priorTree, _, hasPrior, err := loadCheckpointStateWithPresence(cfg)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "checkpoint state: %v\n", err)
+			return exitVerifyFail
+		}
+		tree, signed, err := snapshot.VerifyWithCheckpointState(
+			f,
+			nil,
+			&policy,
+			storage.CheckpointPath(),
+			priorTree,
+			hasPrior,
+		)
+		if err != nil {
 			fmt.Fprintf(os.Stderr, "verify: %v\n", err)
 			return exitVerifyFail
+		}
+		if cfg.CheckpointPath != "" {
+			if err := tlogx.SaveCheckpointState(cfg.CheckpointPath, tree, signed); err != nil {
+				fmt.Fprintf(os.Stderr, "checkpoint state: %v\n", err)
+				return exitVerifyFail
+			}
 		}
 		fmt.Printf("snapshot: %s\n", arg)
 		fmt.Printf("verified: true\n")

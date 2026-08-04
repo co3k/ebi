@@ -585,7 +585,66 @@ func TestVerifySnapshot(t *testing.T) {
 	if !strings.Contains(string(out), "verified: true") {
 		t.Fatalf("expected verified: true, got %s", out)
 	}
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stateTree, _, err := tlogx.LoadCheckpointState(cfg.CheckpointPath)
+	if err != nil {
+		t.Fatalf("snapshot verification did not persist checkpoint state: %v", err)
+	}
+	if stateTree.N != int64(len(records)) {
+		t.Fatalf("persisted snapshot tree size %d, want %d", stateTree.N, len(records))
+	}
 	_ = meta
+}
+
+func TestVerifySnapshotRejectsRollbackState(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("EBI_HOME", tmp)
+
+	k := testKey(t)
+	rec := makeTestRecord(t, k, strings.Repeat("bc", 32))
+	store, policy, records := buildTestLogStore(t, []schema.Record{rec})
+	cp, err := store.Get(context.Background(), storage.CheckpointPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	if _, err := snapshot.Create(context.Background(), store, int64(len(records)), string(cp), &buf); err != nil {
+		t.Fatal(err)
+	}
+	snapshotPath := filepath.Join(tmp, "snapshot.tar.zst")
+	if err := os.WriteFile(snapshotPath, buf.Bytes(), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	statePath := filepath.Join(tmp, "checkpoint-state.toml")
+	prior := tlog.Tree{N: int64(len(records) + 1)}
+	if err := tlogx.SaveCheckpointState(statePath, prior, cp); err != nil {
+		t.Fatal(err)
+	}
+
+	bin := buildBinary(t)
+	cmd := exec.Command(
+		bin,
+		"verify",
+		"--policy", writePolicy(t, policy),
+		"--checkpoint", statePath,
+		snapshotPath,
+	)
+	cmd.Env = append(os.Environ(), "EBI_HOME="+tmp)
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("rollback snapshot unexpectedly verified: %s", out)
+	}
+	exitErr, ok := err.(*exec.ExitError)
+	if !ok || exitErr.ExitCode() != exitVerifyFail {
+		t.Fatalf("expected exit %d, got %v: %s", exitVerifyFail, err, out)
+	}
+	if !strings.Contains(string(out), "rollback") {
+		t.Fatalf("expected rollback diagnostic, got %s", out)
+	}
 }
 
 func TestVerifyRemoteRecordSuccess(t *testing.T) {

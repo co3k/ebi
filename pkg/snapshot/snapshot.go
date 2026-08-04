@@ -401,6 +401,10 @@ func Verify(r io.Reader, want *Metadata, policy *tlogx.Policy, checkpointPath st
 	if err != nil {
 		return err
 	}
+	return verifyInfo(info, want, policy, checkpointPath, limits)
+}
+
+func verifyInfo(info *archiveInfo, want *Metadata, policy *tlogx.Policy, archiveCheckpointPath string, limits Limits) error {
 	if err := verifyArchiveDigest(info, want); err != nil {
 		return err
 	}
@@ -408,7 +412,7 @@ func Verify(r io.Reader, want *Metadata, policy *tlogx.Policy, checkpointPath st
 		return err
 	}
 	if policy != nil {
-		cp := checkpointPath
+		cp := archiveCheckpointPath
 		if cp == "" {
 			cp = checkpointPath
 		}
@@ -420,6 +424,55 @@ func Verify(r io.Reader, want *Metadata, policy *tlogx.Policy, checkpointPath st
 		}
 	}
 	return nil
+}
+
+// VerifyWithCheckpointState verifies a snapshot and additionally checks its
+// checkpoint against a previously trusted tree. The returned signed checkpoint
+// can be persisted only after this function succeeds.
+func VerifyWithCheckpointState(
+	r io.Reader,
+	want *Metadata,
+	policy *tlogx.Policy,
+	archiveCheckpointPath string,
+	priorTree tlog.Tree,
+	hasPrior bool,
+) (tlog.Tree, []byte, error) {
+	if policy == nil {
+		return tlog.Tree{}, nil, fmt.Errorf("checkpoint-state verification requires a trust policy")
+	}
+	limits := DefaultLimits()
+	info, err := readArchive(r, limits)
+	if err != nil {
+		return tlog.Tree{}, nil, err
+	}
+	if err := verifyInfo(info, want, policy, archiveCheckpointPath, limits); err != nil {
+		return tlog.Tree{}, nil, err
+	}
+	cpPath := archiveCheckpointPath
+	if cpPath == "" {
+		cpPath = checkpointPath
+	}
+	checkpoint, ok := info.entries[cpPath]
+	if !ok {
+		return tlog.Tree{}, nil, fmt.Errorf("missing checkpoint %s", cpPath)
+	}
+	if hasPrior {
+		tree, signed, err := tlogx.VerifyCheckpointState(
+			checkpoint.data,
+			priorTree,
+			*policy,
+			&archiveStore{entries: info.entries},
+		)
+		if err != nil {
+			return tlog.Tree{}, nil, err
+		}
+		return tree, signed, nil
+	}
+	tree, _, err := tlogx.VerifyCheckpoint(checkpoint.data, *policy)
+	if err != nil {
+		return tlog.Tree{}, nil, err
+	}
+	return tree, checkpoint.data, nil
 }
 
 // ImportMirror copies all signed tree assets from the archive to store as-is.
@@ -986,7 +1039,8 @@ func readArchive(r io.Reader, limits Limits) (*archiveInfo, error) {
 
 	h := sha256.New()
 	cw := &countedWriter{}
-	zr, err := zstd.NewReader(io.TeeReader(r, io.MultiWriter(h, cw)))
+	compressed := &io.LimitedReader{R: r, N: limits.TotalBytes + 1}
+	zr, err := zstd.NewReader(io.TeeReader(compressed, io.MultiWriter(h, cw)))
 	if err != nil {
 		return nil, fmt.Errorf("zstd reader: %w", err)
 	}
@@ -1041,7 +1095,7 @@ func readArchive(r io.Reader, limits Limits) (*archiveInfo, error) {
 	if _, err := io.Copy(io.Discard, zr); err != nil {
 		return nil, fmt.Errorf("drain zstd stream: %w", err)
 	}
-	if cw.n > limits.TotalBytes {
+	if cw.n > limits.TotalBytes || compressed.N == 0 {
 		return nil, fmt.Errorf("compressed archive exceeds max %d", limits.TotalBytes)
 	}
 	return &archiveInfo{

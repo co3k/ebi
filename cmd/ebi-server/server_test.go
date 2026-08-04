@@ -17,6 +17,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -190,6 +191,37 @@ func (f *testFetcher) Fetch(ctx context.Context, rawURL string, opts fetch.Optio
 	}, nil
 }
 
+type blockingGetStore struct {
+	storage.Store
+	path    string
+	blockAt int
+	started chan struct{}
+	release chan struct{}
+	mu      sync.Mutex
+	count   int
+	once    sync.Once
+}
+
+func (s *blockingGetStore) Get(ctx context.Context, path string) ([]byte, error) {
+	if path != s.path {
+		return s.Store.Get(ctx, path)
+	}
+	s.mu.Lock()
+	s.count++
+	count := s.count
+	s.mu.Unlock()
+	if count != s.blockAt {
+		return s.Store.Get(ctx, path)
+	}
+	s.once.Do(func() { close(s.started) })
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-s.release:
+	}
+	return s.Store.Get(ctx, path)
+}
+
 func TestFetchFailureDoesNotCreatePendingMismatch(t *testing.T) {
 	s, cleanup := newTestServer(t)
 	defer cleanup()
@@ -283,6 +315,26 @@ func makeAuditRecord(t *testing.T, key auditorKey, url string, content []byte, c
 	rec, err := schema.Sign(body, key.priv)
 	if err != nil {
 		t.Fatalf("sign record: %v", err)
+	}
+	return *rec
+}
+
+func makeRetractionRecord(t *testing.T, key auditorKey, target schema.Record) schema.Record {
+	t.Helper()
+	targetID, err := schema.RecordID(target.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := schema.RecordBody{
+		Type:      schema.SchemaRetractV1,
+		CreatedAt: time.Now().UTC().Unix(),
+		Auditor:   key.id,
+		RecordID:  targetID,
+		Reason:    "false-positive",
+	}
+	rec, err := schema.Sign(body, key.priv)
+	if err != nil {
+		t.Fatalf("sign retraction: %v", err)
 	}
 	return *rec
 }
@@ -772,6 +824,187 @@ func TestTombstone(t *testing.T) {
 	prefix := prefixdb.Prefix(rec.Body.Target.SHA256)
 	if _, err := s.Store().Get(ctx, storage.PrefixPath(prefix)); !storage.IsNotFound(err) {
 		t.Fatalf("expected empty shard to be deleted after tombstone, got %v", err)
+	}
+}
+
+func TestTombstoneRejectsRetractedAudit(t *testing.T) {
+	s, cleanup := newTestServer(t)
+	defer cleanup()
+	fetcher := newTestFetcher()
+	s.SetFetcher(fetcher)
+
+	key := newAuditorKey(t)
+	url := "https://example.com/retracted.sh"
+	content := []byte("echo hello\n")
+	fetcher.set(url, content)
+	audit := makeAuditRecord(t, key, url, content, claimsForLines(string(content)))
+	payload, _ := marshalSubmit(audit)
+	w := postJSON(t, s.Handler(), "/v1/records", payload)
+	mustStatus(t, w, http.StatusAccepted)
+	auditID := decodeMap(t, w.Body.Bytes())["record_id"].(string)
+
+	retraction := makeRetractionRecord(t, key, audit)
+	retractPayload, _ := marshalSubmit(retraction)
+	w2 := postJSON(t, s.Handler(), "/v1/records", retractPayload)
+	mustStatus(t, w2, http.StatusAccepted)
+	if s.Tree().Size() != 2 {
+		t.Fatalf("expected audit and retraction leaves, got %d", s.Tree().Size())
+	}
+
+	before, err := s.Store().Get(t.Context(), storage.BlobPath(auditID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := s.Tombstone(t.Context(), auditID)
+	if err == nil || res.err == nil || !strings.Contains(err.Error(), "live retraction") {
+		t.Fatalf("expected live-retraction rejection, got res=%+v err=%v", res, err)
+	}
+	if s.Tree().Size() != 2 {
+		t.Fatalf("rejected tombstone appended a leaf: %d", s.Tree().Size())
+	}
+	after, err := s.Store().Get(t.Context(), storage.BlobPath(auditID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("rejected tombstone changed the audit blob")
+	}
+}
+
+func TestRetractAfterTombstoneIsRejected(t *testing.T) {
+	s, cleanup := newTestServer(t)
+	defer cleanup()
+	fetcher := newTestFetcher()
+	s.SetFetcher(fetcher)
+
+	key := newAuditorKey(t)
+	url := "https://example.com/tombstoned.sh"
+	content := []byte("echo hello\n")
+	fetcher.set(url, content)
+	audit := makeAuditRecord(t, key, url, content, claimsForLines(string(content)))
+	payload, _ := marshalSubmit(audit)
+	w := postJSON(t, s.Handler(), "/v1/records", payload)
+	mustStatus(t, w, http.StatusAccepted)
+	auditID := decodeMap(t, w.Body.Bytes())["record_id"].(string)
+
+	if _, err := s.Tombstone(t.Context(), auditID); err != nil {
+		t.Fatalf("tombstone: %v", err)
+	}
+	if s.Tree().Size() != 2 {
+		t.Fatalf("expected audit and moderation leaves, got %d", s.Tree().Size())
+	}
+
+	retraction := makeRetractionRecord(t, key, audit)
+	retractPayload, _ := marshalSubmit(retraction)
+	w2 := postJSON(t, s.Handler(), "/v1/records", retractPayload)
+	mustStatus(t, w2, http.StatusBadRequest)
+	if !strings.Contains(w2.Body.String(), "unavailable") {
+		t.Fatalf("expected unavailable target response, got %s", w2.Body.String())
+	}
+	if s.Tree().Size() != 2 {
+		t.Fatalf("rejected retraction appended a leaf: %d", s.Tree().Size())
+	}
+}
+
+func TestConcurrentRetractionAndTombstoneRemainConsistent(t *testing.T) {
+	s, cleanup := newTestServer(t)
+	defer cleanup()
+	fetcher := newTestFetcher()
+	s.SetFetcher(fetcher)
+
+	key := newAuditorKey(t)
+	url := "https://example.com/concurrent.sh"
+	content := []byte("echo hello\n")
+	fetcher.set(url, content)
+	audit := makeAuditRecord(t, key, url, content, claimsForLines(string(content)))
+	payload, _ := marshalSubmit(audit)
+	w := postJSON(t, s.Handler(), "/v1/records", payload)
+	mustStatus(t, w, http.StatusAccepted)
+	auditID := decodeMap(t, w.Body.Bytes())["record_id"].(string)
+
+	retraction := makeRetractionRecord(t, key, audit)
+	retractPayload, _ := marshalSubmit(retraction)
+	blocking := &blockingGetStore{
+		Store:   s.store,
+		path:    storage.BlobPath(auditID),
+		blockAt: 2, // Block the sequencer's revalidation, after the HTTP precheck.
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	s.store = blocking
+
+	response := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		response <- postJSON(t, s.Handler(), "/v1/records", retractPayload)
+	}()
+	<-blocking.started
+
+	tombstoneResult := make(chan error, 1)
+	go func() {
+		_, err := s.Tombstone(t.Context(), auditID)
+		tombstoneResult <- err
+	}()
+	close(blocking.release)
+
+	w2 := <-response
+	tombstoneErr := <-tombstoneResult
+	mustStatus(t, w2, http.StatusAccepted)
+	if tombstoneErr == nil || !strings.Contains(tombstoneErr.Error(), "live retraction") {
+		t.Fatalf("accepted retraction must force tombstone rejection: response=%s err=%v", w2.Body.String(), tombstoneErr)
+	}
+	if s.Tree().Size() != 2 {
+		t.Fatalf("expected audit and retraction leaves, got %d", s.Tree().Size())
+	}
+}
+
+func TestInvalidLLMPromptHashLeavesNoOrphanTargetBlob(t *testing.T) {
+	s, cleanup := newTestServer(t)
+	defer cleanup()
+	fetcher := newTestFetcher()
+	s.SetFetcher(fetcher)
+
+	key := newAuditorKey(t)
+	url := "https://example.com/bad-prompt.sh"
+	content := []byte("sudo true\n")
+	fetcher.set(url, content)
+	body := schema.RecordBody{
+		Type:      schema.SchemaAuditV1,
+		CreatedAt: time.Now().UTC().Unix(),
+		Auditor:   key.id,
+		Target: schema.Target{
+			URL:    url,
+			SHA256: storage.ContentHash(content),
+			Size:   int64(len(content)),
+		},
+		Analyzer: schema.Analyzer{
+			Kind:         schema.KindLLM,
+			Model:        "qwen2.5-coder",
+			ModelFamily:  "qwen",
+			Quantization: "q4_k_m",
+			Backend:      "ollama",
+			PromptSHA256: strings.Repeat("a", 64),
+			Runs:         5,
+			Agreement:    1,
+		},
+		Verdict: schema.VerdictDanger,
+		Claims: []schema.Claim{{
+			Category:   "priv.sudo",
+			Line:       1,
+			LineSHA256: schema.LineHash("sudo true"),
+		}},
+	}
+	rec, err := schema.Sign(body, key.priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, _ := marshalSubmit(rec)
+	w := postJSON(t, s.Handler(), "/v1/records", payload)
+	mustStatus(t, w, http.StatusBadRequest)
+	if _, err := s.Store().Get(t.Context(), storage.BlobPath(body.Target.SHA256)); !storage.IsNotFound(err) {
+		t.Fatalf("rejected LLM audit left target artifact: %v", err)
+	}
+	if s.Tree().Size() != 0 {
+		t.Fatalf("rejected LLM audit appended a leaf: %d", s.Tree().Size())
 	}
 }
 

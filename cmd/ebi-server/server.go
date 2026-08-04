@@ -128,6 +128,8 @@ type Server struct {
 type job struct {
 	ctx        context.Context
 	rec        schema.Record
+	validate   func(context.Context) error
+	prepare    func(context.Context) error
 	originalID string
 	pending    bool
 	warning    string
@@ -382,7 +384,7 @@ func (s *Server) runSequencer() {
 }
 
 func (s *Server) processJob(j job) {
-	res := s.sequenceRecord(j.ctx, j.rec)
+	res := s.sequenceRecord(j.ctx, j.rec, j.validate, j.prepare)
 	if j.originalID != "" {
 		res.recordID = j.originalID
 	}
@@ -395,10 +397,26 @@ func (s *Server) processJob(j job) {
 	j.resp <- res
 }
 
-func (s *Server) sequenceRecord(ctx context.Context, rec schema.Record) jobResult {
+func (s *Server) sequenceRecord(
+	ctx context.Context,
+	rec schema.Record,
+	validate func(context.Context) error,
+	prepare func(context.Context) error,
+) jobResult {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.sequenceRecordLocked(ctx, rec, validate, prepare)
+}
 
+// sequenceRecordLocked appends one record while s.mu is held. Validation and
+// artifact preparation run in the same critical section as the append so a
+// concurrent tombstone/cleanup cannot invalidate their result.
+func (s *Server) sequenceRecordLocked(
+	ctx context.Context,
+	rec schema.Record,
+	validate func(context.Context) error,
+	prepare func(context.Context) error,
+) jobResult {
 	id, err := schema.RecordID(rec.Body)
 	if err != nil {
 		return jobResult{err: fmt.Errorf("record id: %w", err)}
@@ -419,23 +437,50 @@ func (s *Server) sequenceRecord(ctx context.Context, rec schema.Record) jobResul
 			return jobResult{recordID: id, warning: "duplicate record"}
 		}
 	}
+	if validate != nil {
+		if err := validate(ctx); err != nil {
+			return jobResult{recordID: id, err: err}
+		}
+	}
+	prepared := false
+	if prepare != nil {
+		// Mark preparation as started before invoking the hook: it may have
+		// written one artifact before a later write fails.
+		prepared = true
+		if err := prepare(ctx); err != nil {
+			res := jobResult{recordID: id, err: fmt.Errorf("prepare record artifacts: %w", err)}
+			if cleanupErr := s.cleanupUnreferencedContentBlobsLocked(ctx); cleanupErr != nil {
+				res.err = errors.Join(res.err, fmt.Errorf("cleanup prepared artifacts: %w", cleanupErr))
+			}
+			return res
+		}
+	}
+	cleanupPrepared := func(res jobResult) jobResult {
+		if !prepared || res.err == nil {
+			return res
+		}
+		if cleanupErr := s.cleanupUnreferencedContentBlobsLocked(ctx); cleanupErr != nil {
+			res.err = errors.Join(res.err, fmt.Errorf("cleanup prepared artifacts: %w", cleanupErr))
+		}
+		return res
+	}
 	if err := s.renewLease(ctx); err != nil {
-		return jobResult{err: fmt.Errorf("lease: %w", err)}
+		return cleanupPrepared(jobResult{recordID: id, err: fmt.Errorf("lease: %w", err)})
 	}
 	idx := s.tree.Size()
 	if err := tlogx.WriteRecord(s.store, idx, rec); err != nil {
-		return jobResult{err: fmt.Errorf("write record: %w", err)}
+		return cleanupPrepared(jobResult{recordID: id, err: fmt.Errorf("write record: %w", err)})
 	}
 	leaf, err := tlogx.RecordToLeaf(rec)
 	if err != nil {
-		return jobResult{err: fmt.Errorf("to leaf: %w", err)}
+		return cleanupPrepared(jobResult{recordID: id, err: fmt.Errorf("to leaf: %w", err)})
 	}
 	if _, err := s.tree.AppendLeaf(leaf); err != nil {
-		return jobResult{err: fmt.Errorf("append leaf: %w", err)}
+		return cleanupPrepared(jobResult{recordID: id, err: fmt.Errorf("append leaf: %w", err)})
 	}
 	published, err := s.reconcileDerivedLocked(ctx)
 	if err != nil {
-		return jobResult{err: err}
+		return cleanupPrepared(jobResult{recordID: id, err: err})
 	}
 	if !published {
 		return jobResult{recordID: id, pending: true, warning: "witness quorum not yet available"}
@@ -710,10 +755,24 @@ func (s *Server) recordsInOrder(ctx context.Context) ([]schema.Record, []int64, 
 }
 
 func (s *Server) sendJob(ctx context.Context, rec schema.Record, originalID string, pending bool, warning string) (jobResult, error) {
+	return s.sendJobWithHooks(ctx, rec, nil, nil, originalID, pending, warning)
+}
+
+func (s *Server) sendJobWithHooks(
+	ctx context.Context,
+	rec schema.Record,
+	validate func(context.Context) error,
+	prepare func(context.Context) error,
+	originalID string,
+	pending bool,
+	warning string,
+) (jobResult, error) {
 	resp := make(chan jobResult, 1)
 	j := job{
 		ctx:        ctx,
 		rec:        rec,
+		validate:   validate,
+		prepare:    prepare,
 		originalID: originalID,
 		pending:    pending,
 		warning:    warning,
@@ -771,6 +830,9 @@ func (s *Server) handleRecords(w http.ResponseWriter, r *http.Request) {
 				"warning":   "target hash mismatch; use /v1/reports for mismatch review",
 			})
 			return
+		} else if !storage.IsNotFound(err) {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "read pending submission state"})
+			return
 		}
 
 		// Fetch the target once and verify hash/size and line hashes.
@@ -793,47 +855,57 @@ func (s *Server) handleRecords(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("claims do not match fetched target: %v", err)})
 			return
 		}
-		if err := s.putContentBlob(r.Context(), bodyVerified.Target.SHA256, data, "text/x-shellscript"); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("store fetched target: %v", err)})
-			return
-		}
+		var promptData []byte
 		if bodyVerified.Analyzer.Kind == schema.KindLLM {
 			prompt := llm.BuildPrompt(string(data))
 			if got := llm.PromptHash(prompt); got != bodyVerified.Analyzer.PromptSHA256 {
 				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "LLM prompt hash does not match the published analyzer prompt"})
 				return
 			}
-			if err := s.putContentBlob(r.Context(), bodyVerified.Analyzer.PromptSHA256, llm.PromptBytes(prompt), "application/octet-stream"); err != nil {
-				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("store LLM prompt: %v", err)})
-				return
+			promptData = llm.PromptBytes(prompt)
+		}
+		prepare := func(ctx context.Context) error {
+			if err := s.putContentBlob(ctx, bodyVerified.Target.SHA256, data, "text/x-shellscript"); err != nil {
+				return fmt.Errorf("store fetched target: %w", err)
 			}
+			if len(promptData) > 0 {
+				if err := s.putContentBlob(ctx, bodyVerified.Analyzer.PromptSHA256, promptData, "application/octet-stream"); err != nil {
+					return fmt.Errorf("store LLM prompt: %w", err)
+				}
+			}
+			return nil
 		}
+		res, err := s.sendJobWithHooks(r.Context(), *rec, nil, prepare, "", false, "")
+		s.writeSequenceResponse(w, auditorID, res, err)
+		return
 	case schema.SchemaRetractV1:
-		targetData, err := s.store.Get(r.Context(), "v1/blob/"+bodyVerified.RecordID)
-		if err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "retraction target does not exist"})
+		if err := s.validateRetractionTarget(r.Context(), rec); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
 		}
-		target, err := schema.DecodeRecordStrict(bytes.NewReader(targetData))
-		if err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "retraction target is unavailable"})
-			return
+		validate := func(ctx context.Context) error {
+			return s.validateRetractionTarget(ctx, rec)
 		}
-		if _, _, err := schema.Verify(target); err != nil || !schema.RetractionMatchesTarget(rec, target) {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "retraction is not authorized by the target auditor"})
-			return
-		}
+		res, err := s.sendJobWithHooks(r.Context(), *rec, validate, nil, "", false, "")
+		s.writeSequenceResponse(w, auditorID, res, err)
+		return
 	default:
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "only audit/v1 and retract/v1 records are accepted"})
 		return
 	}
+}
 
-	res, err := s.sendJob(r.Context(), *rec, "", false, "")
+func (s *Server) writeSequenceResponse(w http.ResponseWriter, auditorID string, res jobResult, err error) {
 	if err != nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": fmt.Sprintf("sequence: %v", err)})
 		return
 	}
 	if res.err != nil {
+		var validationErr *recordValidationError
+		if errors.As(res.err, &validationErr) {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": validationErr.Error()})
+			return
+		}
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("sequence: %v", res.err)})
 		return
 	}
@@ -843,6 +915,30 @@ func (s *Server) handleRecords(w http.ResponseWriter, r *http.Request) {
 		"warning":   res.warning,
 		"auditor":   auditorID,
 	})
+}
+
+type recordValidationError struct {
+	message string
+}
+
+func (e *recordValidationError) Error() string { return e.message }
+
+func (s *Server) validateRetractionTarget(ctx context.Context, rec *schema.Record) error {
+	targetData, err := s.store.Get(ctx, storage.BlobPath(rec.Body.RecordID))
+	if err != nil {
+		return &recordValidationError{message: "retraction target does not exist"}
+	}
+	if _, isTombstone, err := tlogx.DecodeTombstoneBlob(targetData, rec.Body.RecordID); err != nil || isTombstone {
+		return &recordValidationError{message: "retraction target is unavailable"}
+	}
+	target, err := schema.DecodeRecordStrict(bytes.NewReader(targetData))
+	if err != nil {
+		return &recordValidationError{message: "retraction target is unavailable"}
+	}
+	if _, _, err := schema.Verify(target); err != nil || !schema.RetractionMatchesTarget(rec, target) {
+		return &recordValidationError{message: "retraction is not authorized by the target auditor"}
+	}
+	return nil
 }
 
 type submitRecordRequest struct {
@@ -1091,6 +1187,9 @@ func (s *Server) handleTombstone(w http.ResponseWriter, r *http.Request) {
 // Tombstone replaces a blob with a tombstone JSON and appends a moderation
 // record. It is exported for use by the command-line tombstone subcommand.
 func (s *Server) Tombstone(ctx context.Context, recordID string) (jobResult, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	if !schema.IsHexHash(recordID) {
 		err := fmt.Errorf("record ID must be a lowercase SHA-256 hex string")
 		return jobResult{err: err}, err
@@ -1103,6 +1202,35 @@ func (s *Server) Tombstone(ctx context.Context, recordID string) (jobResult, err
 		return jobResult{err: err}, err
 	} else if isTombstone {
 		err := fmt.Errorf("record is already tombstoned")
+		return jobResult{err: err}, err
+	}
+	target, err := schema.DecodeRecordStrict(bytes.NewReader(original))
+	if err != nil {
+		err := fmt.Errorf("tombstone target is not a signed record")
+		return jobResult{err: err}, err
+	}
+	if _, _, err := schema.Verify(target); err != nil {
+		err = fmt.Errorf("verify tombstone target: %w", err)
+		return jobResult{err: err}, err
+	}
+	sequenced, err := s.isSequencedRecordLocked(ctx, recordID)
+	if err != nil {
+		return jobResult{err: err}, err
+	}
+	if !sequenced {
+		err := fmt.Errorf("tombstone target is not a sequenced record")
+		return jobResult{err: err}, err
+	}
+	if target.Body.Type == schema.SchemaModerationV1 && target.Body.Reason == "tombstone" {
+		err := fmt.Errorf("tombstone moderation bindings cannot be tombstoned")
+		return jobResult{err: err}, err
+	}
+	retracted, err := s.hasMatchingRetractionLocked(ctx, target)
+	if err != nil {
+		return jobResult{err: err}, err
+	}
+	if retracted {
+		err := fmt.Errorf("record has a live retraction; tombstone the retraction first")
 		return jobResult{err: err}, err
 	}
 	tombstone := map[string]interface{}{
@@ -1128,9 +1256,9 @@ func (s *Server) Tombstone(ctx context.Context, recordID string) (jobResult, err
 	if err != nil {
 		return jobResult{err: err}, err
 	}
-	res, err := s.sendJob(ctx, rec, "", false, "")
-	if err != nil || res.err != nil {
-		return res, err
+	res := s.sequenceRecordLocked(ctx, rec, nil, nil)
+	if res.err != nil {
+		return res, res.err
 	}
 	if res.pending {
 		err := fmt.Errorf("moderation checkpoint is awaiting witness quorum; original blob was not deleted")
@@ -1153,19 +1281,23 @@ func (s *Server) Tombstone(ctx context.Context, recordID string) (jobResult, err
 	}); err != nil {
 		return jobResult{recordID: res.recordID, err: err}, err
 	}
-	s.mu.Lock()
 	err = s.updateShards(ctx)
-	s.mu.Unlock()
 	if err != nil {
 		return jobResult{recordID: res.recordID, err: err}, err
 	}
-	if err := s.cleanupUnreferencedContentBlobs(ctx); err != nil {
+	if err := s.cleanupUnreferencedContentBlobsLocked(ctx); err != nil {
 		return jobResult{recordID: res.recordID, err: err}, err
 	}
 	return res, nil
 }
 
 func (s *Server) cleanupUnreferencedContentBlobs(ctx context.Context) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.cleanupUnreferencedContentBlobsLocked(ctx)
+}
+
+func (s *Server) cleanupUnreferencedContentBlobsLocked(ctx context.Context) error {
 	indexes, err := tlogx.LoadLeafIndexes(ctx, s.store)
 	if err != nil {
 		return err
@@ -1209,6 +1341,45 @@ func (s *Server) cleanupUnreferencedContentBlobs(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+func (s *Server) isSequencedRecordLocked(ctx context.Context, recordID string) (bool, error) {
+	indexes, err := tlogx.LoadLeafIndexes(ctx, s.store)
+	if err != nil {
+		return false, err
+	}
+	for _, index := range indexes {
+		if index.RecordID == recordID {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (s *Server) hasMatchingRetractionLocked(ctx context.Context, target *schema.Record) (bool, error) {
+	indexes, err := tlogx.LoadLeafIndexes(ctx, s.store)
+	if err != nil {
+		return false, err
+	}
+	for _, index := range indexes {
+		data, err := s.store.Get(ctx, storage.BlobPath(index.RecordID))
+		if err != nil {
+			return false, err
+		}
+		if _, tombstone, err := tlogx.DecodeTombstoneBlob(data, index.RecordID); err != nil {
+			return false, err
+		} else if tombstone {
+			continue
+		}
+		rec, err := schema.DecodeRecordStrict(bytes.NewReader(data))
+		if err != nil {
+			return false, err
+		}
+		if rec.Body.Type == schema.SchemaRetractV1 && schema.RetractionMatchesTarget(rec, target) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {

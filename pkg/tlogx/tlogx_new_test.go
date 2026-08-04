@@ -555,6 +555,81 @@ func TestCheckpointState(t *testing.T) {
 	}
 }
 
+func TestVerifyInclusionAtAgainstSuppliedTree(t *testing.T) {
+	logSigner, _, _, logKey, err := GenerateKeyPair("ebi.example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy := Policy{LogName: "ebi.example.com", LogKeys: []string{logKey}}
+	store, err := storage.NewLocal(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	tr := NewTree()
+	var leaves []Leaf
+	var leafHashes []tlog.Hash
+	for i := 0; i < 10; i++ {
+		rec, leaf := makeRecord(t, fmt.Sprintf("r%d", i))
+		idx, err := tr.AppendLeaf(leaf)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := WriteRecord(store, idx, rec); err != nil {
+			t.Fatal(err)
+		}
+		lh, _ := LeafHash(leaf)
+		leaves = append(leaves, leaf)
+		leafHashes = append(leafHashes, lh)
+	}
+	if err := WriteTiles(tr, store, DefaultTileHeight); err != nil {
+		t.Fatal(err)
+	}
+	treeN := tr.TlogTree()
+	if err := WriteCheckpoint(treeN, "ebi.example.com", logSigner, store); err != nil {
+		t.Fatal(err)
+	}
+
+	// Advance to N+1 and overwrite the checkpoint and tiles. The old tiles
+	// needed to prove inclusion in tree N must remain readable.
+	rec, leaf := makeRecord(t, "extra")
+	idx, err := tr.AppendLeaf(leaf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteRecord(store, idx, rec); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteTiles(tr, store, DefaultTileHeight); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteCheckpoint(tr.TlogTree(), "ebi.example.com", logSigner, store); err != nil {
+		t.Fatal(err)
+	}
+
+	// Verification against the retained immutable tree N must succeed even
+	// though the mutable checkpoint now points at N+1.
+	for i := int64(0); i < treeN.N; i++ {
+		if err := VerifyInclusionAt(store, i, leafHashes[i], treeN, policy); err != nil {
+			t.Fatalf("index %d against retained tree N: %v", i, err)
+		}
+	}
+
+	// Bounds checks are preserved.
+	if err := VerifyInclusionAt(store, -1, leafHashes[0], treeN, policy); err == nil {
+		t.Fatal("expected negative index error")
+	}
+	if err := VerifyInclusionAt(store, treeN.N, leafHashes[0], treeN, policy); err == nil {
+		t.Fatal("expected out-of-range index error")
+	}
+
+	// Tampered leaf must still fail.
+	badLeaf := leafHashes[0]
+	badLeaf[0] ^= 0xff
+	if err := VerifyInclusionAt(store, 0, badLeaf, treeN, policy); err == nil {
+		t.Fatal("expected tampered leaf to fail")
+	}
+}
+
 func TestVerifyInclusionAt(t *testing.T) {
 	logSigner, _, _, logKey, err := GenerateKeyPair("ebi.example.com")
 	if err != nil {

@@ -979,23 +979,12 @@ func LoadLeavesFromIndex(store storage.Store) ([]Leaf, error) {
 }
 
 // VerifyInclusionAt verifies an inclusion proof for a leaf at a given index using
-// the tile storage. It does not rely on sorting blobs by record ID; it trusts
-// the checkpoint signed by the policy.
+// the tile storage and the supplied immutable tree. The caller must have already
+// authenticated the tree against the policy; this function does not re-fetch the
+// mutable v1/checkpoint. Bounds checks on the index are preserved.
 func VerifyInclusionAt(store storage.Store, index int64, leaf tlog.Hash, tree tlog.Tree, policy Policy) error {
 	if index < 0 || index >= tree.N {
 		return fmt.Errorf("leaf index %d out of range [0,%d)", index, tree.N)
-	}
-	// Authenticate the checkpoint against the policy to ensure the tree root is trusted.
-	data, err := store.Get(context.Background(), storage.CheckpointPath())
-	if err != nil {
-		return err
-	}
-	got, _, err := VerifyCheckpoint(data, policy)
-	if err != nil {
-		return err
-	}
-	if got.N != tree.N || got.Hash != tree.Hash {
-		return fmt.Errorf("checkpoint does not match supplied tree")
 	}
 	tr := NewTileReader(store, DefaultTileHeight)
 	hr := tlog.TileHashReader(tree, tr)

@@ -32,6 +32,14 @@ guarantee**.
   near zero; production communities still need a published trust-evolution and
   governance policy based on observed data.
 
+## Dependency baseline
+
+- Go `1.24.11` is the module language baseline and CI/build images use the
+  `1.24.13` toolchain.
+- gitleaks is kept on `v8.30.1`.
+- `mvdan.cc/sh/v3` remains on `v3.12.0`, the latest release in this dependency
+  line that supports Go 1.24; `v3.13.x` requires Go 1.25.
+
 ## Stable wire rules
 
 - record body: RFC 8785 JCS;

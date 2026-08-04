@@ -376,6 +376,33 @@ func (s *putErrorStore) CompareAndDelete(ctx context.Context, path string, old [
 	return s.Store.(storage.AtomicStore).CompareAndDelete(ctx, path, old)
 }
 
+type countingGetStore struct {
+	storage.Store
+	mu     sync.Mutex
+	counts map[string]int
+}
+
+func (s *countingGetStore) Get(ctx context.Context, path string) ([]byte, error) {
+	s.mu.Lock()
+	s.counts[path]++
+	s.mu.Unlock()
+	return s.Store.Get(ctx, path)
+}
+
+func (s *countingGetStore) count(path string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.counts[path]
+}
+
+func (s *countingGetStore) CompareAndSwap(ctx context.Context, path string, old []byte, obj storage.Object) (bool, error) {
+	return s.Store.(storage.AtomicStore).CompareAndSwap(ctx, path, old, obj)
+}
+
+func (s *countingGetStore) CompareAndDelete(ctx context.Context, path string, old []byte) (bool, error) {
+	return s.Store.(storage.AtomicStore).CompareAndDelete(ctx, path, old)
+}
+
 func TestFetchFailureDoesNotCreatePendingMismatch(t *testing.T) {
 	s, cleanup := newTestServer(t)
 	defer cleanup()
@@ -836,6 +863,48 @@ func TestDuplicateRecord(t *testing.T) {
 	}
 	if s.Tree().Size() != 1 {
 		t.Fatalf("expected tree size 1, got %d", s.Tree().Size())
+	}
+}
+
+func TestSequencingUsesCachedRecordBodies(t *testing.T) {
+	s, cleanup := newTestServer(t)
+	defer cleanup()
+	fetcher := newTestFetcher()
+	s.SetFetcher(fetcher)
+
+	key := newAuditorKey(t)
+	firstURL := "https://example.com/cache-first.sh"
+	firstContent := []byte("echo first\n")
+	fetcher.set(firstURL, firstContent)
+	first := makeAuditRecord(t, key, firstURL, firstContent, nil)
+	firstPayload, _ := marshalSubmit(first)
+	mustStatus(t, postJSON(t, s.Handler(), "/v1/records", firstPayload), http.StatusAccepted)
+	firstID, err := schema.RecordID(first.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	counter := &countingGetStore{
+		Store:  s.store,
+		counts: make(map[string]int),
+	}
+	s.store = counter
+
+	secondURL := "https://example.com/cache-second.sh"
+	secondContent := []byte("echo second\n")
+	fetcher.set(secondURL, secondContent)
+	second := makeAuditRecord(t, key, secondURL, secondContent, nil)
+	secondPayload, _ := marshalSubmit(second)
+	mustStatus(t, postJSON(t, s.Handler(), "/v1/records", secondPayload), http.StatusAccepted)
+	if got := counter.count(storage.BlobPath(firstID)); got != 0 {
+		t.Fatalf("sequencing reread the prior record blob %d times", got)
+	}
+
+	// A duplicate submission also uses the in-memory record-id index instead
+	// of scanning leaf indexes and record blobs.
+	mustStatus(t, postJSON(t, s.Handler(), "/v1/records", firstPayload), http.StatusAccepted)
+	if got := counter.count(storage.BlobPath(firstID)); got != 0 {
+		t.Fatalf("duplicate sequencing reread the record blob %d times", got)
 	}
 }
 

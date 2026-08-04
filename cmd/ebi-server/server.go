@@ -116,6 +116,8 @@ type Server struct {
 	origin          string
 	tree            *tlogx.Tree
 	treeSize        atomic.Int64
+	records         []cachedRecord
+	recordPositions map[string]int
 	checkpointState string
 	ownerID         string
 	leasePath       string
@@ -135,6 +137,12 @@ type Server struct {
 	rateWindows     map[string]submissionWindow
 	httpServer      *http.Server
 	listener        net.Listener
+}
+
+type cachedRecord struct {
+	id    string
+	index int64
+	rec   *schema.Record
 }
 
 // job is a single unit of sequenced work.
@@ -193,6 +201,15 @@ func NewServer(ctx context.Context, cfg ServerConfig) (*Server, error) {
 		_ = store.Close()
 		return nil, fmt.Errorf("load tree: %w", err)
 	}
+	records, positions, err := loadRecordCache(ctx, store)
+	if err != nil {
+		_ = store.Close()
+		return nil, fmt.Errorf("load record cache: %w", err)
+	}
+	if len(records) != len(leaves) {
+		_ = store.Close()
+		return nil, fmt.Errorf("record cache length %d does not match tree leaves %d", len(records), len(leaves))
+	}
 
 	checkpointState := cfg.CheckpointState
 	if checkpointState == "" {
@@ -229,6 +246,8 @@ func NewServer(ctx context.Context, cfg ServerConfig) (*Server, error) {
 		policy:          policy,
 		origin:          origin,
 		tree:            tree,
+		records:         records,
+		recordPositions: positions,
 		checkpointState: checkpointState,
 		ownerID:         ownerID,
 		leasePath:       "v1/lease",
@@ -533,28 +552,22 @@ func (s *Server) sequenceRecordLocked(
 	if err != nil {
 		return jobResult{err: fmt.Errorf("record id: %w", err)}
 	}
-	indexes, err := tlogx.LoadLeafIndexes(ctx, s.store)
-	if err != nil {
-		return jobResult{err: fmt.Errorf("load leaf indexes: %w", err)}
-	}
-	for _, index := range indexes {
-		if index.RecordID == id {
-			current, err := s.publishedCheckpointIsCurrent(ctx)
-			if err != nil {
-				return jobResult{recordID: id, err: fmt.Errorf("read checkpoint for duplicate record: %w", err)}
-			}
-			if current {
-				return jobResult{recordID: id, warning: "duplicate record"}
-			}
-			published, err := s.reconcileDerivedLocked(ctx)
-			if err != nil {
-				return jobResult{recordID: id, err: fmt.Errorf("reconcile duplicate record: %w", err)}
-			}
-			if !published {
-				return jobResult{recordID: id, pending: true, warning: "witness quorum not yet available"}
-			}
+	if _, exists := s.recordPositions[id]; exists {
+		current, err := s.publishedCheckpointIsCurrent(ctx)
+		if err != nil {
+			return jobResult{recordID: id, err: fmt.Errorf("read checkpoint for duplicate record: %w", err)}
+		}
+		if current {
 			return jobResult{recordID: id, warning: "duplicate record"}
 		}
+		published, err := s.reconcileDerivedLocked(ctx)
+		if err != nil {
+			return jobResult{recordID: id, err: fmt.Errorf("reconcile duplicate record: %w", err)}
+		}
+		if !published {
+			return jobResult{recordID: id, pending: true, warning: "witness quorum not yet available"}
+		}
+		return jobResult{recordID: id, warning: "duplicate record"}
 	}
 	if validate != nil {
 		if err := validate(ctx); err != nil {
@@ -598,6 +611,9 @@ func (s *Server) sequenceRecordLocked(
 		return cleanupPrepared(jobResult{recordID: id, err: fmt.Errorf("append leaf: %w", err)})
 	}
 	s.treeSize.Store(s.tree.Size())
+	s.recordPositions[id] = len(s.records)
+	recCopy := rec
+	s.records = append(s.records, cachedRecord{id: id, index: idx, rec: &recCopy})
 	published, err := s.reconcileDerivedLocked(ctx)
 	if err != nil {
 		return cleanupPrepared(jobResult{recordID: id, err: err})
@@ -859,8 +875,16 @@ func (s *Server) updateShards(ctx context.Context) error {
 		return err
 	}
 	for prefix, data := range shards {
+		path := storage.PrefixPath(prefix)
+		if current, err := s.store.Get(ctx, path); err == nil {
+			if bytes.Equal(current, data) {
+				continue
+			}
+		} else if !storage.IsNotFound(err) {
+			return err
+		}
 		if err := s.store.Put(ctx, storage.Object{
-			Path:         storage.PrefixPath(prefix),
+			Path:         path,
 			Data:         data,
 			ContentType:  "application/json",
 			CacheSeconds: 300,
@@ -887,58 +911,73 @@ func (s *Server) updateShards(ctx context.Context) error {
 	return nil
 }
 
-func (s *Server) recordsInOrder(ctx context.Context) ([]schema.Record, []int64, error) {
-	leaves, err := tlogx.LoadLeavesFromIndex(s.store)
+func loadRecordCache(ctx context.Context, store storage.Store) ([]cachedRecord, map[string]int, error) {
+	indexes, err := tlogx.LoadLeafIndexes(ctx, store)
 	if err != nil {
 		return nil, nil, err
 	}
-	all := make([]schema.Record, 0, len(leaves))
-	allIndices := make([]int64, 0, len(leaves))
-	for i, leaf := range leaves {
-		data, err := s.store.Get(ctx, "v1/blob/"+leaf.RecordID)
-		if err != nil {
-			return nil, nil, fmt.Errorf("read blob %s: %w", leaf.RecordID, err)
+	records := make([]cachedRecord, 0, len(indexes))
+	positions := make(map[string]int, len(indexes))
+	for _, index := range indexes {
+		if _, exists := positions[index.RecordID]; exists {
+			return nil, nil, fmt.Errorf("record %s appears more than once in the leaf index", index.RecordID)
 		}
-		if _, isTombstone, err := tlogx.DecodeTombstoneBlob(data, leaf.RecordID); err != nil {
-			return nil, nil, fmt.Errorf("decode tombstone %s: %w", leaf.RecordID, err)
-		} else if isTombstone {
+		data, err := store.Get(ctx, storage.BlobPath(index.RecordID))
+		if err != nil {
+			return nil, nil, fmt.Errorf("read blob %s: %w", index.RecordID, err)
+		}
+		cached := cachedRecord{id: index.RecordID, index: index.Index}
+		if _, tombstone, err := tlogx.DecodeTombstoneBlob(data, index.RecordID); err != nil {
+			return nil, nil, fmt.Errorf("decode tombstone %s: %w", index.RecordID, err)
+		} else if !tombstone {
+			rec, err := schema.DecodeRecordStrict(bytes.NewReader(data))
+			if err != nil {
+				return nil, nil, fmt.Errorf("decode blob %s: %w", index.RecordID, err)
+			}
+			body, _, err := schema.Verify(rec)
+			if err != nil {
+				return nil, nil, fmt.Errorf("verify blob %s: %w", index.RecordID, err)
+			}
+			id, err := schema.RecordID(*body)
+			if err != nil {
+				return nil, nil, fmt.Errorf("record id %s: %w", index.RecordID, err)
+			}
+			if id != index.RecordID {
+				return nil, nil, fmt.Errorf("blob %s contains record %s", index.RecordID, id)
+			}
+			cached.rec = rec
+		}
+		positions[index.RecordID] = len(records)
+		records = append(records, cached)
+	}
+	return records, positions, nil
+}
+
+func (s *Server) recordsInOrder(ctx context.Context) ([]schema.Record, []int64, error) {
+	_ = ctx
+	retracted := make(map[string]bool)
+	for _, cached := range s.records {
+		if cached.rec == nil || cached.rec.Body.Type != schema.SchemaRetractV1 {
 			continue
 		}
-		rec, err := schema.DecodeRecordStrict(bytes.NewReader(data))
-		if err != nil {
-			return nil, nil, fmt.Errorf("decode blob %s: %w", leaf.RecordID, err)
-		}
-		if rec.Body.Type != schema.SchemaAuditV1 && rec.Body.Type != schema.SchemaRetractV1 {
+		retracted[cached.rec.Body.Auditor+"\x00"+cached.rec.Body.RecordID] = true
+	}
+	records := make([]schema.Record, 0, len(s.records))
+	indices := make([]int64, 0, len(s.records))
+	for _, cached := range s.records {
+		if cached.rec == nil {
 			continue
 		}
-		all = append(all, *rec)
-		allIndices = append(allIndices, int64(i))
-	}
-	var retractions []schema.Record
-	for _, rec := range all {
-		if rec.Body.Type == schema.SchemaRetractV1 {
-			retractions = append(retractions, rec)
-		}
-	}
-	records := make([]schema.Record, 0, len(all))
-	indices := make([]int64, 0, len(all))
-	for i, rec := range all {
+		rec := *cached.rec
 		if rec.Body.Type != schema.SchemaAuditV1 ||
 			rec.Body.Target.SHA256 == "" || !schema.IsHexHash(rec.Body.Target.SHA256) {
 			continue
 		}
-		retracted := false
-		for j := range retractions {
-			if schema.RetractionMatchesTarget(&retractions[j], &rec) {
-				retracted = true
-				break
-			}
-		}
-		if retracted {
+		if retracted[rec.Body.Auditor+"\x00"+cached.id] {
 			continue
 		}
 		records = append(records, rec)
-		indices = append(indices, allIndices[i])
+		indices = append(indices, cached.index)
 	}
 	return records, indices, nil
 }
@@ -1457,6 +1496,9 @@ func (s *Server) Tombstone(ctx context.Context, recordID string) (jobResult, err
 	}); err != nil {
 		return jobResult{recordID: res.recordID, err: err}, err
 	}
+	if pos, ok := s.recordPositions[recordID]; ok {
+		s.records[pos].rec = nil
+	}
 	err = s.updateShards(ctx)
 	if err != nil {
 		return jobResult{recordID: res.recordID, err: err}, err
@@ -1559,33 +1601,16 @@ func (s *Server) cleanupUnreferencedContentBlobs(ctx context.Context) error {
 }
 
 func (s *Server) cleanupUnreferencedContentBlobsLocked(ctx context.Context) error {
-	indexes, err := tlogx.LoadLeafIndexes(ctx, s.store)
-	if err != nil {
-		return err
-	}
-	leafIDs := make(map[string]bool, len(indexes))
+	leafIDs := make(map[string]bool, len(s.records))
 	referencedArtifacts := make(map[string]bool)
-	for _, index := range indexes {
-		leafIDs[index.RecordID] = true
-		data, err := s.store.Get(ctx, storage.BlobPath(index.RecordID))
-		if err != nil {
-			return err
-		}
-		if _, tombstone, err := tlogx.DecodeTombstoneBlob(data, index.RecordID); err != nil {
-			return err
-		} else if tombstone {
+	for _, cached := range s.records {
+		leafIDs[cached.id] = true
+		if cached.rec == nil || cached.rec.Body.Type != schema.SchemaAuditV1 {
 			continue
 		}
-		record, err := schema.DecodeRecordStrict(bytes.NewReader(data))
-		if err != nil {
-			return err
-		}
-		if record.Body.Type != schema.SchemaAuditV1 {
-			continue
-		}
-		referencedArtifacts[record.Body.Target.SHA256] = true
-		if record.Body.Analyzer.Kind == schema.KindLLM {
-			referencedArtifacts[record.Body.Analyzer.PromptSHA256] = true
+		referencedArtifacts[cached.rec.Body.Target.SHA256] = true
+		if cached.rec.Body.Analyzer.Kind == schema.KindLLM {
+			referencedArtifacts[cached.rec.Body.Analyzer.PromptSHA256] = true
 		}
 	}
 	keys, err := s.store.List(ctx, "v1/blob")
@@ -1605,38 +1630,18 @@ func (s *Server) cleanupUnreferencedContentBlobsLocked(ctx context.Context) erro
 }
 
 func (s *Server) isSequencedRecordLocked(ctx context.Context, recordID string) (bool, error) {
-	indexes, err := tlogx.LoadLeafIndexes(ctx, s.store)
-	if err != nil {
-		return false, err
-	}
-	for _, index := range indexes {
-		if index.RecordID == recordID {
-			return true, nil
-		}
-	}
-	return false, nil
+	_ = ctx
+	_, ok := s.recordPositions[recordID]
+	return ok, nil
 }
 
 func (s *Server) hasMatchingRetractionLocked(ctx context.Context, target *schema.Record) (bool, error) {
-	indexes, err := tlogx.LoadLeafIndexes(ctx, s.store)
-	if err != nil {
-		return false, err
-	}
-	for _, index := range indexes {
-		data, err := s.store.Get(ctx, storage.BlobPath(index.RecordID))
-		if err != nil {
-			return false, err
-		}
-		if _, tombstone, err := tlogx.DecodeTombstoneBlob(data, index.RecordID); err != nil {
-			return false, err
-		} else if tombstone {
+	_ = ctx
+	for _, cached := range s.records {
+		if cached.rec == nil {
 			continue
 		}
-		rec, err := schema.DecodeRecordStrict(bytes.NewReader(data))
-		if err != nil {
-			return false, err
-		}
-		if rec.Body.Type == schema.SchemaRetractV1 && schema.RetractionMatchesTarget(rec, target) {
+		if cached.rec.Body.Type == schema.SchemaRetractV1 && schema.RetractionMatchesTarget(cached.rec, target) {
 			return true, nil
 		}
 	}
@@ -1883,6 +1888,12 @@ func (s *Server) ImportSnapshot(ctx context.Context, r io.Reader, mode string) e
 		}
 		s.tree = tree
 		s.treeSize.Store(tree.Size())
+		records, positions, err := loadRecordCache(ctx, s.store)
+		if err != nil {
+			return fmt.Errorf("load imported mirror record cache: %w", err)
+		}
+		s.records = records
+		s.recordPositions = positions
 		checkpoint, err := s.store.Get(ctx, storage.CheckpointPath())
 		if err != nil {
 			return fmt.Errorf("read imported mirror checkpoint: %w", err)
@@ -1916,6 +1927,12 @@ func (s *Server) ImportSnapshot(ctx context.Context, r io.Reader, mode string) e
 		}
 		s.tree = tree
 		s.treeSize.Store(tree.Size())
+		records, positions, err := loadRecordCache(ctx, s.store)
+		if err != nil {
+			return fmt.Errorf("load forked record cache: %w", err)
+		}
+		s.records = records
+		s.recordPositions = positions
 		if _, err := s.reconcileDerivedLocked(ctx); err != nil {
 			return fmt.Errorf("publish forked log: %w", err)
 		}

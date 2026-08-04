@@ -37,6 +37,9 @@ func TestCanonicalAndID(t *testing.T) {
 	if ContainsField(cb, "id") {
 		t.Fatal("canonical body must not contain analyzer id")
 	}
+	if !bytes.Contains(cb, []byte(`"claims":[]`)) {
+		t.Fatalf("canonical audit must include empty claims: %s", cb)
+	}
 	id, err := RecordID(b)
 	if err != nil {
 		t.Fatal(err)
@@ -47,6 +50,77 @@ func TestCanonicalAndID(t *testing.T) {
 	want := sha256.Sum256(cb)
 	if id != hex.EncodeToString(want[:]) {
 		t.Fatalf("record id mismatch")
+	}
+}
+
+func TestCanonicalLLMIncludesZeroAgreement(t *testing.T) {
+	b := RecordBody{
+		Type:      SchemaAuditV1,
+		CreatedAt: 1704067200,
+		Auditor:   hash64('a'),
+		Target:    Target{URL: "https://example.com/install.sh", SHA256: hash64('b'), Size: 12},
+		Analyzer: Analyzer{
+			Kind:         KindLLM,
+			Model:        "model",
+			ModelFamily:  "family",
+			Quantization: "q4",
+			Backend:      "ollama",
+			PromptSHA256: hash64('c'),
+			Runs:         2,
+			Agreement:    0,
+		},
+		Verdict: VerdictOK,
+	}
+	cb, err := CanonicalBytes(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(cb, []byte(`"agreement":0`)) {
+		t.Fatalf("canonical LLM analyzer omitted zero agreement: %s", cb)
+	}
+}
+
+func TestVerifyAcceptsExplicitEmptyClaimsAndZeroAgreement(t *testing.T) {
+	_, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pub := priv.Public().(ed25519.PublicKey)
+	body := RecordBody{
+		Type:      SchemaAuditV1,
+		CreatedAt: 1704067200,
+		Auditor:   AuditorHash(hex.EncodeToString(pub)),
+		Target:    Target{URL: "https://example.com/install.sh", SHA256: hash64('b'), Size: 12},
+		Analyzer: Analyzer{
+			Kind:         KindLLM,
+			Model:        "model",
+			ModelFamily:  "family",
+			Quantization: "q4",
+			Backend:      "ollama",
+			PromptSHA256: hash64('c'),
+			Runs:         2,
+			Agreement:    0,
+		},
+		Verdict: VerdictOK,
+		Claims:  []Claim{},
+	}
+	rec, err := Sign(body, priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(raw, []byte(`"claims":[]`)) || !bytes.Contains(raw, []byte(`"agreement":0`)) {
+		t.Fatalf("wire form omitted explicit zero values: %s", raw)
+	}
+	decoded, err := DecodeRecordStrict(bytes.NewReader(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := Verify(decoded); err != nil {
+		t.Fatal(err)
 	}
 }
 

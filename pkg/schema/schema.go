@@ -102,6 +102,31 @@ type Analyzer struct {
 	Version string `json:"-"`
 }
 
+// MarshalJSON emits the type-specific analyzer wire form. LLM reproducibility
+// fields are always present, including valid zero agreement, while non-LLM
+// analyzers contain only their kind.
+func (a Analyzer) MarshalJSON() ([]byte, error) {
+	if a.Kind != KindLLM {
+		return json.Marshal(struct {
+			Kind string `json:"kind"`
+		}{Kind: a.Kind})
+	}
+	return json.Marshal(struct {
+		Kind         string  `json:"kind"`
+		Model        string  `json:"model"`
+		ModelFamily  string  `json:"model_family"`
+		Quantization string  `json:"quantization"`
+		Backend      string  `json:"backend"`
+		PromptSHA256 string  `json:"prompt_sha256"`
+		Runs         int     `json:"runs"`
+		Agreement    float64 `json:"agreement"`
+	}{
+		Kind: a.Kind, Model: a.Model, ModelFamily: a.ModelFamily,
+		Quantization: a.Quantization, Backend: a.Backend,
+		PromptSHA256: a.PromptSHA256, Runs: a.Runs, Agreement: a.Agreement,
+	})
+}
+
 // Claim is a single piece of evidence produced by an analyzer.
 type Claim struct {
 	Category   string `json:"category"`
@@ -156,18 +181,22 @@ type RecordBody struct {
 func (b RecordBody) MarshalJSON() ([]byte, error) {
 	switch b.Type {
 	case SchemaAuditV1:
+		claims := b.Claims
+		if claims == nil {
+			claims = []Claim{}
+		}
 		return json.Marshal(struct {
 			Type        string        `json:"type"`
 			Target      Target        `json:"target"`
 			Verdict     string        `json:"verdict"`
-			Claims      []Claim       `json:"claims,omitempty"`
+			Claims      []Claim       `json:"claims"`
 			Analyzer    Analyzer      `json:"analyzer"`
 			SecondStage []SecondStage `json:"second_stage,omitempty"`
 			PrevSHA256  string        `json:"prev_sha256,omitempty"`
 			CreatedAt   int64         `json:"created_at"`
 			Auditor     string        `json:"auditor"`
 		}{
-			Type: b.Type, Target: b.Target, Verdict: b.Verdict, Claims: b.Claims,
+			Type: b.Type, Target: b.Target, Verdict: b.Verdict, Claims: claims,
 			Analyzer: b.Analyzer, SecondStage: b.SecondStage,
 			PrevSHA256: b.PrevSHA256, CreatedAt: b.CreatedAt, Auditor: b.Auditor,
 		})
@@ -265,7 +294,7 @@ func Sign(body RecordBody, priv ed25519.PrivateKey) (*Record, error) {
 	if body.Auditor != wantAuditor {
 		return nil, fmt.Errorf("body auditor %s does not match derived auditor %s", body.Auditor, wantAuditor)
 	}
-	if err := ValidateBody(&body, body.Target.Size); err != nil {
+	if err := ValidateBody(&body, -1); err != nil {
 		return nil, fmt.Errorf("validate body: %w", err)
 	}
 	digest, err := SigningDigest(body)
@@ -301,7 +330,7 @@ func Verify(rec *Record) (*RecordBody, string, error) {
 	if len(sigBytes) != ed25519.SignatureSize {
 		return nil, "", fmt.Errorf("invalid signature length %d", len(sigBytes))
 	}
-	if err := ValidateBody(&rec.Body, rec.Body.Target.Size); err != nil {
+	if err := ValidateBody(&rec.Body, -1); err != nil {
 		return nil, "", fmt.Errorf("validate body: %w", err)
 	}
 	wantAuditor := AuditorHash(rec.PublicKey)

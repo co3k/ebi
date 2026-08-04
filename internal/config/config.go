@@ -180,8 +180,7 @@ func (c *Config) MergeEnv() {
 		c.OptIn = v == "1" || strings.EqualFold(v, "true") || strings.EqualFold(v, "yes")
 	}
 	if v := os.Getenv(appmeta.EnvPrefix() + "CONTRIBUTION_DELAY_HOURS"); v != "" {
-		var h int
-		if _, err := fmt.Sscanf(v, "%d", &h); err == nil {
+		if h, err := strconv.Atoi(v); err == nil {
 			c.ContributionDelayHours = h
 		}
 	}

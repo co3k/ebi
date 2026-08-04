@@ -23,7 +23,7 @@ func TestQueue(t *testing.T) {
 		t.Fatal(err)
 	}
 	rec := queueTestRecord(t)
-	if err := q.Enqueue(rec, false); err != nil {
+	if err := q.Enqueue(rec, 0); err != nil {
 		t.Fatal(err)
 	}
 	status, err := q.Status()
@@ -70,8 +70,17 @@ func TestQueueDelayedFlush(t *testing.T) {
 		t.Fatal(err)
 	}
 	rec := queueTestRecord(t)
-	if err := q.Enqueue(rec, true); err != nil {
+	before := time.Now().UTC()
+	if err := q.Enqueue(rec, 2); err != nil {
 		t.Fatal(err)
+	}
+	entries, err := q.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].FlushAfter.Before(before) ||
+		!entries[0].FlushAfter.Before(before.Add(2*time.Hour)) {
+		t.Fatalf("scheduled delay is outside configured 2h window: %+v", entries)
 	}
 	// Before the scheduled time, flush should be empty.
 	records, err := q.Flush(time.Now().UTC())
@@ -88,6 +97,22 @@ func TestQueueDelayedFlush(t *testing.T) {
 	}
 	if len(records) != 1 {
 		t.Fatalf("expected 1 record after delay, got %d", len(records))
+	}
+}
+
+func TestQueueRejectsInvalidDelay(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("EBI_HOME", "")
+	t.Setenv("XDG_CONFIG_HOME", "")
+	q, err := NewQueue()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := queueTestRecord(t)
+	for _, delay := range []int{-1, 25} {
+		if err := q.Enqueue(rec, delay); err == nil {
+			t.Fatalf("expected delay %d to be rejected", delay)
+		}
 	}
 }
 

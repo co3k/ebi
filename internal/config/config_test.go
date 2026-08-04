@@ -103,6 +103,16 @@ func TestMergeEnv(t *testing.T) {
 	}
 }
 
+func TestContributionDelayEnvRequiresWholeInteger(t *testing.T) {
+	t.Setenv(appmeta.EnvPrefix()+"CONTRIBUTION_DELAY_HOURS", "2x")
+	cfg := DefaultConfig()
+	cfg.ContributionDelayHours = 7
+	cfg.MergeEnv()
+	if cfg.ContributionDelayHours != 7 {
+		t.Fatalf("partial integer was accepted: %d", cfg.ContributionDelayHours)
+	}
+}
+
 func TestEBIHome(t *testing.T) {
 	dir := t.TempDir()
 	os.Setenv("EBI_HOME", dir)

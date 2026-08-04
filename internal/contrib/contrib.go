@@ -76,18 +76,22 @@ func (q *Queue) Status() (int, error) {
 	return len(entries), nil
 }
 
-// Enqueue adds a record to the queue. If randomDelay is true, it schedules a
-// randomized future flush time (0-24h). The queue uses atomic writes.
-func (q *Queue) Enqueue(record *schema.Record, randomDelay bool) error {
+// Enqueue adds a record to the queue. If delayHours is positive, it schedules
+// a cryptographically randomized future flush time in [0, delayHours). The
+// queue uses atomic writes.
+func (q *Queue) Enqueue(record *schema.Record, delayHours int) error {
 	if record == nil {
 		return fmt.Errorf("cannot enqueue nil record")
+	}
+	if delayHours < 0 || delayHours > 24 {
+		return fmt.Errorf("delay hours must be between 0 and 24")
 	}
 	if _, _, err := schema.Verify(record); err != nil {
 		return fmt.Errorf("verify queued record: %w", err)
 	}
 	entry := queuedEntry{Record: record}
-	if randomDelay {
-		delay, err := rand.Int(rand.Reader, big.NewInt(24*60*60))
+	if delayHours > 0 {
+		delay, err := rand.Int(rand.Reader, big.NewInt(int64(delayHours)*60*60))
 		if err != nil {
 			return err
 		}

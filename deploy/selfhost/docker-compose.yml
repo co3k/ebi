@@ -9,8 +9,8 @@ services:
     image: quay.io/minio/minio:latest
     command: server /data --console-address ":9001"
     environment:
-      MINIO_ROOT_USER: ${EBI_MINIO_USER:-ebi-admin}
-      MINIO_ROOT_PASSWORD: ${EBI_MINIO_PASSWORD:-change-me-in-production}
+      MINIO_ROOT_USER: ${EBI_MINIO_USER:?set EBI_MINIO_USER}
+      MINIO_ROOT_PASSWORD: ${EBI_MINIO_PASSWORD:?set EBI_MINIO_PASSWORD}
     volumes:
       - minio_data:/data
     ports:
@@ -34,8 +34,8 @@ services:
       mc mb --ignore-existing local/ebi-data
       "
     environment:
-      MINIO_ROOT_USER: ${EBI_MINIO_USER:-ebi-admin}
-      MINIO_ROOT_PASSWORD: ${EBI_MINIO_PASSWORD:-change-me-in-production}
+      MINIO_ROOT_USER: ${EBI_MINIO_USER:?set EBI_MINIO_USER}
+      MINIO_ROOT_PASSWORD: ${EBI_MINIO_PASSWORD:?set EBI_MINIO_PASSWORD}
     restart: no
 
   init-policy:
@@ -80,8 +80,8 @@ services:
       EBI_STORAGE_ENDPOINT: "http://minio:9000"
       EBI_STORAGE_REGION: "us-east-1"
       EBI_STORAGE_BUCKET: "ebi-data"
-      EBI_STORAGE_ACCESS_KEY: ${EBI_MINIO_USER:-ebi-admin}
-      EBI_STORAGE_SECRET_KEY: ${EBI_MINIO_PASSWORD:-change-me-in-production}
+      EBI_STORAGE_ACCESS_KEY: ${EBI_MINIO_USER:?set EBI_MINIO_USER}
+      EBI_STORAGE_SECRET_KEY: ${EBI_MINIO_PASSWORD:?set EBI_MINIO_PASSWORD}
       EBI_STORAGE_PATH_STYLE: "true"
       EBI_LOG_ORIGIN: ${EBI_LOG_ORIGIN:-ebi.example.com}
       EBI_LOG_KEY: ${EBI_LOG_KEY:-}
@@ -118,8 +118,8 @@ services:
       EBI_STORAGE_ENDPOINT: "http://minio:9000"
       EBI_STORAGE_REGION: "us-east-1"
       EBI_STORAGE_BUCKET: "ebi-data"
-      EBI_STORAGE_ACCESS_KEY: ${EBI_MINIO_USER:-ebi-admin}
-      EBI_STORAGE_SECRET_KEY: ${EBI_MINIO_PASSWORD:-change-me-in-production}
+      EBI_STORAGE_ACCESS_KEY: ${EBI_MINIO_USER:?set EBI_MINIO_USER}
+      EBI_STORAGE_SECRET_KEY: ${EBI_MINIO_PASSWORD:?set EBI_MINIO_PASSWORD}
       EBI_STORAGE_PATH_STYLE: "true"
     volumes:
       - ebi_config:/etc/ebi:ro

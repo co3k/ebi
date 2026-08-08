@@ -1,4 +1,23 @@
-# Rust
+# Go
+*.exe
+*.dll
+*.so
+*.dylib
+/ebi
+/ebi-server
+/ebi-monitor
+/safepipe
+/bin/
+/dist/
+/vendor/
+/.gomodcache/
+/.gocache/
+/.cache/
+/.codex/
+*.test
+*.out
+
+# Rust / old Cargo artifacts
 /target/
 Cargo.lock
 
@@ -12,6 +31,10 @@ Cargo.lock
 .DS_Store
 Thumbs.db
 
+# JavaScript / Cloudflare tooling
+node_modules/
+.wrangler/
+
 # Environment files
 .env
 .env.local
@@ -20,10 +43,27 @@ Thumbs.db
 # Logs
 *.log
 
-# API Keys (security)
+# API Keys / secrets (security)
 *api_key*
-*secret*
+*.secret
+secrets.json
+.dev.vars
 
 # Test artifacts
 /test-outputs/
 /coverage/
+
+# Local runtime state
+/.local/
+
+# Terraform
+*.tfstate
+*.tfstate.*
+*.tfvars
+.terraform/
+
+# MinIO
+minio_data/
+
+# Dataset build
+/dataset/*.tar.zst

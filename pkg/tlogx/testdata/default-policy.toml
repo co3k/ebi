@@ -1,0 +1,7 @@
+# Placeholder transparency-log policy for ebi.
+# Replace the example origin and configure real log/witness verifier keys
+# before running in production.
+origin = "ebi.example.com"
+log_keys = []
+witness_keys = []
+required_witnesses = 0

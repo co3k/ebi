@@ -1,0 +1,151 @@
+# Self-hosted ebi stack: server + MinIO S3 backend + monitor.
+# Health checks and restart policies are enabled. No host bind-mount is used as
+# the sole storage path; S3-compatible credentials are via environment only.
+
+name: ebi
+
+services:
+  minio:
+    image: quay.io/minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${EBI_MINIO_USER:?set EBI_MINIO_USER}
+      MINIO_ROOT_PASSWORD: ${EBI_MINIO_PASSWORD:?set EBI_MINIO_PASSWORD}
+    volumes:
+      - minio_data:/data
+    ports:
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  createbuckets:
+    image: quay.io/minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 $${MINIO_ROOT_USER} $${MINIO_ROOT_PASSWORD} &&
+      mc mb --ignore-existing local/ebi-data
+      "
+    environment:
+      MINIO_ROOT_USER: ${EBI_MINIO_USER:?set EBI_MINIO_USER}
+      MINIO_ROOT_PASSWORD: ${EBI_MINIO_PASSWORD:?set EBI_MINIO_PASSWORD}
+    restart: no
+
+  init-policy:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    image: ebi:latest
+    entrypoint: ["/ebi-server"]
+    command:
+      - init-policy
+      - --output
+      - /etc/ebi/trust-policy.toml
+      - --data-dir
+      - /var/lib/ebi
+    environment:
+      EBI_LOG_ORIGIN: ${EBI_LOG_ORIGIN:-ebi.example.com}
+      EBI_LOG_KEY: ${EBI_LOG_KEY:-}
+      EBI_WITNESS_KEYS: ${EBI_WITNESS_KEYS:-}
+      EBI_WITNESS_URLS: ${EBI_WITNESS_URLS:-}
+      EBI_REQUIRED_WITNESSES: ${EBI_REQUIRED_WITNESSES:-0}
+    volumes:
+      - ebi_state:/var/lib/ebi
+      - ebi_config:/etc/ebi
+    depends_on:
+      createbuckets:
+        condition: service_completed_successfully
+    restart: no
+
+  ebi-server:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    image: ebi:latest
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      EBI_PORT: "8080"
+      EBI_DATA_DIR: "/var/lib/ebi"
+      EBI_LOG_KEY_FILE: "/var/lib/ebi/log-key"
+      EBI_CHECKPOINT_STATE: "/var/lib/ebi/checkpoint-state"
+      EBI_STORAGE: "s3"
+      EBI_STORAGE_ENDPOINT: "http://minio:9000"
+      EBI_STORAGE_REGION: "us-east-1"
+      EBI_STORAGE_BUCKET: "ebi-data"
+      EBI_STORAGE_ACCESS_KEY: ${EBI_MINIO_USER:?set EBI_MINIO_USER}
+      EBI_STORAGE_SECRET_KEY: ${EBI_MINIO_PASSWORD:?set EBI_MINIO_PASSWORD}
+      EBI_STORAGE_PATH_STYLE: "true"
+      EBI_LOG_ORIGIN: ${EBI_LOG_ORIGIN:-ebi.example.com}
+      EBI_LOG_KEY: ${EBI_LOG_KEY:-}
+      EBI_WITNESS_KEYS: ${EBI_WITNESS_KEYS:-}
+      EBI_WITNESS_URLS: ${EBI_WITNESS_URLS:-}
+      EBI_REQUIRED_WITNESSES: ${EBI_REQUIRED_WITNESSES:-0}
+    volumes:
+      - ebi_state:/var/lib/ebi
+    depends_on:
+      init-policy:
+        condition: service_completed_successfully
+    deploy:
+      replicas: 1
+    healthcheck:
+      test: ["CMD", "/ebi-server", "healthcheck", "--url", "http://127.0.0.1:8080/healthz"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  ebi-monitor:
+    image: ebi:latest
+    entrypoint: ["/ebi-monitor"]
+    command:
+      - --storage-env
+      - --policy
+      - /etc/ebi/trust-policy.toml
+      - --checkpoint-state
+      - /var/lib/ebi-monitor/checkpoint-state.toml
+      - --interval
+      - 5m
+    environment:
+      EBI_STORAGE: "s3"
+      EBI_STORAGE_ENDPOINT: "http://minio:9000"
+      EBI_STORAGE_REGION: "us-east-1"
+      EBI_STORAGE_BUCKET: "ebi-data"
+      EBI_STORAGE_ACCESS_KEY: ${EBI_MINIO_USER:?set EBI_MINIO_USER}
+      EBI_STORAGE_SECRET_KEY: ${EBI_MINIO_PASSWORD:?set EBI_MINIO_PASSWORD}
+      EBI_STORAGE_PATH_STYLE: "true"
+    volumes:
+      - ebi_config:/etc/ebi:ro
+      - ebi_monitor_state:/var/lib/ebi-monitor
+    depends_on:
+      ebi-server:
+        condition: service_healthy
+    restart: unless-stopped
+    # One-shot mode is also available: add `--one-shot` to command.
+    # Example override:
+    # command: ["--storage-env", "--policy", "/etc/ebi/trust-policy.toml",
+    #           "--one-shot"]
+
+volumes:
+  minio_data:
+    driver: local
+  ebi_state:
+    driver: local
+  ebi_monitor_state:
+    driver: local
+  ebi_config:
+    driver: local
+
+# Example optional environment file (witness-policy.env.example):
+# EBI_LOG_KEY=origin+hash+publickey
+# EBI_LOG_ORIGIN=ebi.example.com
+# EBI_WITNESS_KEYS=witness-key1,witness-key2
+# EBI_WITNESS_URLS=https://witness-1.example,https://witness-2.example
+# EBI_REQUIRED_WITNESSES=2

@@ -1,0 +1,49 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "ebi-server",
+  "main": "worker.ts",
+  "compatibility_date": "2026-08-03",
+  "workers_dev": false,
+  "routes": [
+    {
+      "pattern": "submit.example.com",
+      "custom_domain": true
+    }
+  ],
+  "containers": [
+    {
+      "class_name": "EbiServer",
+      "image": "./Dockerfile",
+      "image_build_context": "../..",
+      "instance_type": "basic",
+      "max_instances": 1
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "EBI_SERVER",
+        "class_name": "EbiServer"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["EbiServer"]
+    }
+  ],
+  "vars": {
+    "EBI_PORT": "8080",
+    "EBI_DATA_DIR": "/tmp/ebi",
+    "EBI_CHECKPOINT_STATE": "/tmp/ebi/checkpoint-state",
+    "EBI_LOG_ORIGIN": "ebi.example.com",
+    "EBI_STORAGE": "s3",
+    "EBI_STORAGE_REGION": "auto",
+    "EBI_STORAGE_PATH_STYLE": "true"
+  },
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  }
+}

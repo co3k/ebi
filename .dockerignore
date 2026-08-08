@@ -1,0 +1,16 @@
+.git
+.codex
+.cache
+dist
+bin
+target
+node_modules
+**/node_modules
+**/.wrangler
+**/.terraform
+**/*.tar.zst
+*.test
+*.out
+ebi
+ebi-server
+ebi-monitor
